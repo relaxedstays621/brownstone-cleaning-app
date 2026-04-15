@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
-import { getSheets, SHEET_ID } from "@/lib/google";
+import { getSheets, SHEET_ID, ensureSheetHeaders } from "@/lib/google";
 
 export async function POST(req: NextRequest) {
   if (!(await isAuthenticated())) {
@@ -16,6 +16,8 @@ export async function POST(req: NextRequest) {
     minute: "2-digit",
     hour12: true,
   });
+
+  await ensureSheetHeaders();
 
   const sheets = getSheets();
   await sheets.spreadsheets.values.append({

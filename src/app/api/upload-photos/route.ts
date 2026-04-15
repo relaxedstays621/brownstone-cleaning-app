@@ -73,15 +73,8 @@ export async function POST(req: NextRequest) {
     uploadedCount++;
   }
 
-  // Update the Clean Log with submit time and photo count
-  const submitTime = now.toLocaleTimeString("en-US", {
-    timeZone: "America/Los_Angeles",
-    hour: "numeric",
-    minute: "2-digit",
-    hour12: true,
-  });
-
-  // Find the matching row (most recent row with this property and no submit time)
+  // Update the Clean Log with photo count (column E)
+  // Find the matching row (most recent row with this property and no finish time)
   const sheets = getSheets();
   const logData = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
@@ -98,12 +91,15 @@ export async function POST(req: NextRequest) {
   }
 
   if (targetRow > 0) {
+    // Get existing photo count and add to it
+    const existing = rows[targetRow - 1][4];
+    const existingCount = existing ? parseInt(existing, 10) || 0 : 0;
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_ID,
-      range: `Clean Log!D${targetRow}:E${targetRow}`,
+      range: `Clean Log!E${targetRow}`,
       valueInputOption: "USER_ENTERED",
       requestBody: {
-        values: [[submitTime, uploadedCount.toString()]],
+        values: [[(existingCount + uploadedCount).toString()]],
       },
     });
   }

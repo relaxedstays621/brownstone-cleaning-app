@@ -8,6 +8,8 @@ import InventoryTab from "./InventoryTab";
 function CleanPageInner() {
   const [activeTab, setActiveTab] = useState<"photos" | "inventory">("photos");
   const [authChecked, setAuthChecked] = useState(false);
+  const [showFinishModal, setShowFinishModal] = useState(false);
+  const [finishing, setFinishing] = useState(false);
   const router = useRouter();
   const searchParams = useSearchParams();
   const property = searchParams.get("property") || "";
@@ -22,6 +24,23 @@ function CleanPageInner() {
       });
   }, [router, property]);
 
+  async function handleFinishClean() {
+    setFinishing(true);
+    try {
+      const res = await fetch("/api/finish-clean", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ property }),
+      });
+      if (!res.ok) throw new Error("Failed");
+      router.push("/select-property");
+    } catch {
+      alert("Failed to finish clean. Please try again.");
+      setFinishing(false);
+      setShowFinishModal(false);
+    }
+  }
+
   if (!authChecked) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -31,7 +50,7 @@ function CleanPageInner() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-gray-50 pb-24">
       {/* Header */}
       <div className="bg-white border-b border-gray-200 px-4 py-3">
         <div className="max-w-lg mx-auto flex items-center justify-between">
@@ -82,6 +101,46 @@ function CleanPageInner() {
           <InventoryTab property={property} />
         )}
       </div>
+
+      {/* Finish Clean Button — fixed at bottom */}
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 p-4">
+        <div className="max-w-lg mx-auto">
+          <button
+            onClick={() => setShowFinishModal(true)}
+            className="w-full bg-green-600 text-white py-3 rounded-xl text-lg font-medium hover:bg-green-700 active:bg-green-800 transition-colors"
+          >
+            Finish Clean
+          </button>
+        </div>
+      </div>
+
+      {/* Confirmation Modal */}
+      {showFinishModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl">
+            <h2 className="text-lg font-bold mb-2">Finish Clean?</h2>
+            <p className="text-gray-600 mb-6">
+              Have you submitted all photos and logged all inventory requests?
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setShowFinishModal(false)}
+                disabled={finishing}
+                className="flex-1 bg-gray-200 text-gray-700 py-3 rounded-xl font-medium hover:bg-gray-300 transition-colors"
+              >
+                Go Back
+              </button>
+              <button
+                onClick={handleFinishClean}
+                disabled={finishing}
+                className="flex-1 bg-green-600 text-white py-3 rounded-xl font-medium hover:bg-green-700 active:bg-green-800 transition-colors disabled:opacity-50"
+              >
+                {finishing ? "Finishing..." : "Yes, Finish Clean"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

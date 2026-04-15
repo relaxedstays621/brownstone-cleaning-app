@@ -15,7 +15,7 @@ export async function POST(req: NextRequest) {
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
   const message = await client.messages.create({
-    model: "claude-sonnet-4-20250514",
+    model: "claude-sonnet-4-5",
     max_tokens: 1024,
     system: `You are a helper that formats inventory requests for a vacation rental cleaning team.
 The user will describe items they need restocked or replaced in natural language (possibly from voice-to-text, so expect rough grammar).
