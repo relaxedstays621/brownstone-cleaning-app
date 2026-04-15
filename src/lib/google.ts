@@ -54,5 +54,47 @@ export async function ensureSheetHeaders() {
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [INVENTORY_HEADERS] },
     });
+
+    // Get the sheet ID for Inventory Requests tab
+    const spreadsheet = await sheets.spreadsheets.get({
+      spreadsheetId: SHEET_ID,
+    });
+    const inventorySheet = spreadsheet.data.sheets?.find(
+      (s) => s.properties?.title === "Inventory Requests"
+    );
+    const sheetId = inventorySheet?.properties?.sheetId;
+
+    if (sheetId !== undefined) {
+      // Add dropdown validation to Status column (F = index 5) for rows 2-1000
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: SHEET_ID,
+        requestBody: {
+          requests: [
+            {
+              setDataValidation: {
+                range: {
+                  sheetId,
+                  startRowIndex: 1,
+                  endRowIndex: 1000,
+                  startColumnIndex: 5,
+                  endColumnIndex: 6,
+                },
+                rule: {
+                  condition: {
+                    type: "ONE_OF_LIST",
+                    values: [
+                      { userEnteredValue: "Pending" },
+                      { userEnteredValue: "Ordered" },
+                    ],
+                  },
+                  showCustomUi: true,
+                  strict: true,
+                },
+              },
+            },
+          ],
+        },
+      });
+    }
   }
 }
