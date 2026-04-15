@@ -116,14 +116,14 @@ export default function PhotosTab({ property }: Props) {
     <div>
       {success && (
         <div className="bg-green-50 border border-green-200 rounded-xl p-4 mb-4 text-center">
-          <div className="text-3xl mb-2">&#10003;</div>
+          <div className="text-3xl mb-2">✅</div>
           <p className="text-green-800 font-medium">{progress}</p>
         </div>
       )}
 
       <label className="block w-full cursor-pointer">
         <div className="bg-white border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:border-blue-400 transition-colors">
-          <div className="text-4xl mb-2">&#128247;</div>
+          <div className="text-4xl mb-2">📷</div>
           <p className="text-gray-600 font-medium">Tap to select photos</p>
           <p className="text-gray-400 text-sm mt-1">Select multiple from camera roll</p>
         </div>

@@ -118,7 +118,7 @@ export default function InventoryTab({ property }: Props) {
     <div>
       {success && (
         <div className="bg-green-50 border border-green-200 rounded-xl p-4 mb-4 text-center">
-          <div className="text-3xl mb-2">&#10003;</div>
+          <div className="text-3xl mb-2">✅</div>
           <p className="text-green-800 font-medium">Inventory request submitted!</p>
         </div>
       )}
@@ -141,7 +141,7 @@ export default function InventoryTab({ property }: Props) {
                   : "bg-gray-200 text-gray-700 hover:bg-gray-300"
               }`}
             >
-              {listening ? "&#9632; Stop" : "&#127908; Voice"}
+              {listening ? "⏹ Stop" : "🎤 Voice"}
             </button>
             <button
               onClick={handleParse}
