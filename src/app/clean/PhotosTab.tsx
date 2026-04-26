@@ -72,6 +72,7 @@ export default function PhotosTab({ property }: Props) {
     const selected = Array.from(e.target.files || []);
     setFiles(selected);
     setSuccess(false);
+    setProgress("");
     const urls = selected.map((f) => URL.createObjectURL(f));
     setPreviews(urls);
   }
@@ -91,22 +92,23 @@ export default function PhotosTab({ property }: Props) {
         formData.append("photos", stamped, `photo_${i}.jpg`);
       }
 
-      setProgress("Uploading to Google Drive...");
+      setProgress(`Uploading ${files.length} photo${files.length !== 1 ? "s" : ""} to Google Drive...`);
       const res = await fetch("/api/upload-photos", {
         method: "POST",
         body: formData,
       });
 
-      if (!res.ok) throw new Error("Upload failed");
       const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `Upload failed (${res.status})`);
       setSuccess(true);
-      setProgress(`${data.count} photos uploaded successfully!`);
+      setProgress(`${data.count} photo${data.count !== 1 ? "s" : ""} uploaded successfully`);
       setFiles([]);
       setPreviews([]);
       if (inputRef.current) inputRef.current.value = "";
     } catch (err) {
-      setProgress("Upload failed. Please try again.");
-      console.error(err);
+      const message = err instanceof Error ? err.message : "Unknown error";
+      setProgress(`Upload failed: ${message}`);
+      console.error("[PhotosTab] Upload error:", err);
     } finally {
       setUploading(false);
     }
@@ -116,8 +118,13 @@ export default function PhotosTab({ property }: Props) {
     <div>
       {success && (
         <div className="bg-green-50 border border-green-200 rounded-xl p-4 mb-4 text-center">
-          <div className="text-3xl mb-2">✅</div>
-          <p className="text-green-800 font-medium">{progress}</p>
+          <p className="text-green-800 font-medium text-lg">&#10003; {progress}</p>
+        </div>
+      )}
+
+      {!success && !uploading && progress && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4 text-center">
+          <p className="text-red-800 font-medium">{progress}</p>
         </div>
       )}
 
@@ -156,7 +163,7 @@ export default function PhotosTab({ property }: Props) {
           <button
             onClick={handleUpload}
             disabled={uploading}
-            className="w-full bg-blue-600 text-white py-3 rounded-xl text-lg font-medium hover:bg-blue-700 active:bg-blue-800 transition-colors disabled:opacity-50"
+            className="w-full bg-blue-600 text-white py-3 rounded-xl text-lg font-medium hover:bg-blue-700 active:bg-blue-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {uploading ? progress : `Upload ${previews.length} Photo${previews.length !== 1 ? "s" : ""}`}
           </button>

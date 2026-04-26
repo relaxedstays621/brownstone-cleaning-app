@@ -34,8 +34,11 @@ export async function POST(req: NextRequest) {
   const files = formData.getAll("photos") as File[];
 
   if (!property || files.length === 0) {
+    console.log("[upload-photos] Missing property or photos", { property, fileCount: files.length });
     return NextResponse.json({ error: "Missing property or photos" }, { status: 400 });
   }
+
+  console.log(`[upload-photos] Starting upload for ${files.length} photos to property: ${property}`);
 
   const drive = getDrive();
   const now = new Date();
@@ -48,6 +51,7 @@ export async function POST(req: NextRequest) {
   // Upload each photo
   let uploadedCount = 0;
   for (const file of files) {
+    console.log(`[upload-photos] Uploading photo ${uploadedCount + 1} of ${files.length}: ${file.name}`);
     const timestamp = new Date();
     const timeStr = timestamp.toLocaleTimeString("en-US", {
       timeZone: "America/Los_Angeles",
@@ -60,16 +64,23 @@ export async function POST(req: NextRequest) {
     const fileName = `photo_${timeStr}_${uploadedCount + 1}.jpg`;
     const buffer = Buffer.from(await file.arrayBuffer());
 
-    await drive.files.create({
-      requestBody: {
-        name: fileName,
-        parents: [dateFolderId],
-      },
-      media: {
-        mimeType: "image/jpeg",
-        body: Readable.from(buffer),
-      },
-    });
+    try {
+      const driveRes = await drive.files.create({
+        requestBody: {
+          name: fileName,
+          parents: [dateFolderId],
+        },
+        media: {
+          mimeType: "image/jpeg",
+          body: Readable.from(buffer),
+        },
+        fields: "id",
+      });
+      console.log(`[upload-photos] Successfully uploaded ${fileName} to Drive folder ${dateFolderId} (fileId: ${driveRes.data.id})`);
+    } catch (err) {
+      console.error(`[upload-photos] Failed to upload ${fileName}:`, err);
+      throw err;
+    }
     uploadedCount++;
   }
 
@@ -104,5 +115,6 @@ export async function POST(req: NextRequest) {
     });
   }
 
+  console.log(`[upload-photos] All ${uploadedCount} photos uploaded successfully for property: ${property}`);
   return NextResponse.json({ success: true, count: uploadedCount });
 }
