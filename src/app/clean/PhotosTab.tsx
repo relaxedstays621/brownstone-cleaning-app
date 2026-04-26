@@ -6,56 +6,88 @@ interface Props {
   property: string;
 }
 
+function isCanvasSupported(): boolean {
+  try {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    return !!ctx;
+  } catch {
+    return false;
+  }
+}
+
 function burnTimestamp(file: File): Promise<Blob> {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
+    if (!isCanvasSupported()) {
+      console.warn("[PhotosTab] Canvas not supported, uploading without timestamp");
+      resolve(file);
+      return;
+    }
+
     const img = new Image();
     img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(img, 0, 0);
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          console.warn("[PhotosTab] Could not get 2d context, uploading without timestamp");
+          resolve(file);
+          return;
+        }
+        ctx.drawImage(img, 0, 0);
 
-      const now = new Date();
-      const timestamp = now.toLocaleString("en-US", {
-        month: "2-digit",
-        day: "2-digit",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit",
-        hour12: true,
-      });
+        const now = new Date();
+        const timestamp = now.toLocaleString("en-US", {
+          month: "2-digit",
+          day: "2-digit",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: true,
+        });
 
-      const fontSize = Math.max(16, Math.floor(img.width / 30));
-      ctx.font = `bold ${fontSize}px sans-serif`;
-      const textWidth = ctx.measureText(timestamp).width;
-      const padding = fontSize * 0.5;
-      const x = padding;
-      const y = img.height - padding;
+        const fontSize = Math.max(16, Math.floor(img.width / 30));
+        ctx.font = `bold ${fontSize}px sans-serif`;
+        const textWidth = ctx.measureText(timestamp).width;
+        const padding = fontSize * 0.5;
+        const x = padding;
+        const y = img.height - padding;
 
-      // Dark background
-      ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
-      ctx.fillRect(
-        x - padding * 0.5,
-        y - fontSize - padding * 0.3,
-        textWidth + padding,
-        fontSize + padding * 0.8
-      );
+        // Dark background
+        ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+        ctx.fillRect(
+          x - padding * 0.5,
+          y - fontSize - padding * 0.3,
+          textWidth + padding,
+          fontSize + padding * 0.8
+        );
 
-      // White text
-      ctx.fillStyle = "#ffffff";
-      ctx.fillText(timestamp, x, y);
+        // White text
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(timestamp, x, y);
 
-      canvas.toBlob(
-        (blob) => {
-          if (blob) resolve(blob);
-          else reject(new Error("Canvas toBlob failed"));
-        },
-        "image/jpeg",
-        0.85
-      );
+        canvas.toBlob(
+          (blob) => {
+            if (blob) resolve(blob);
+            else {
+              console.warn("[PhotosTab] toBlob failed, uploading without timestamp");
+              resolve(file);
+            }
+          },
+          "image/jpeg",
+          0.85
+        );
+      } catch (err) {
+        console.warn("[PhotosTab] Canvas error, uploading without timestamp:", err);
+        resolve(file);
+      }
     };
-    img.onerror = reject;
+    img.onerror = () => {
+      console.warn("[PhotosTab] Image load failed, uploading original file");
+      resolve(file);
+    };
     img.src = URL.createObjectURL(file);
   });
 }

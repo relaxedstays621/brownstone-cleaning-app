@@ -5,11 +5,30 @@ import { useRouter, useSearchParams } from "next/navigation";
 import PhotosTab from "./PhotosTab";
 import InventoryTab from "./InventoryTab";
 
+function useUnsupportedBrowser() {
+  const [unsupported, setUnsupported] = useState(false);
+  useEffect(() => {
+    const ua = navigator.userAgent;
+    const isDuckDuckGo = /DuckDuckGo/i.test(ua);
+    const hasCanvas = (() => {
+      try {
+        const c = document.createElement("canvas");
+        return !!c.getContext("2d");
+      } catch {
+        return false;
+      }
+    })();
+    setUnsupported(isDuckDuckGo || !hasCanvas);
+  }, []);
+  return unsupported;
+}
+
 function CleanPageInner() {
   const [activeTab, setActiveTab] = useState<"photos" | "inventory">("photos");
   const [authChecked, setAuthChecked] = useState(false);
   const [showFinishModal, setShowFinishModal] = useState(false);
   const [finishing, setFinishing] = useState(false);
+  const unsupportedBrowser = useUnsupportedBrowser();
   const router = useRouter();
   const searchParams = useSearchParams();
   const property = searchParams.get("property") || "";
@@ -66,6 +85,15 @@ function CleanPageInner() {
           </button>
         </div>
       </div>
+
+      {/* Browser warning */}
+      {unsupportedBrowser && (
+        <div className="bg-yellow-50 border-b border-yellow-200 px-4 py-2">
+          <p className="max-w-lg mx-auto text-yellow-800 text-sm text-center font-medium">
+            For best results, please use Chrome or Safari
+          </p>
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="bg-white border-b border-gray-200">
