@@ -122,13 +122,14 @@ function CleanPageInner() {
         </div>
       </div>
 
-      {/* Content */}
+      {/* Content — both tabs stay mounted so state and in-flight requests survive a tab switch */}
       <div className="max-w-lg mx-auto p-4">
-        {activeTab === "photos" ? (
+        <div className={activeTab === "photos" ? "" : "hidden"}>
           <PhotosTab cleanId={cleanId} />
-        ) : (
+        </div>
+        <div className={activeTab === "inventory" ? "" : "hidden"}>
           <InventoryTab property={property} />
-        )}
+        </div>
       </div>
 
       {/* Finish Clean Button — fixed at bottom */}
