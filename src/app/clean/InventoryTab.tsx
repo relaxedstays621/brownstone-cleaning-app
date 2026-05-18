@@ -4,6 +4,9 @@ import { useState, useRef, useEffect } from "react";
 
 interface Props {
   property: string;
+  active: boolean;
+  onBusyChange?: (busy: boolean) => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 interface InventoryItem {
@@ -15,7 +18,7 @@ interface InventoryItem {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SpeechRecognitionInstance = any;
 
-export default function InventoryTab({ property }: Props) {
+export default function InventoryTab({ property, active, onBusyChange, onDirtyChange }: Props) {
   const [text, setText] = useState("");
   const [listening, setListening] = useState(false);
   const [parsing, setParsing] = useState(false);
@@ -32,6 +35,25 @@ export default function InventoryTab({ property }: Props) {
       }
     };
   }, []);
+
+  // Stop voice recognition when the cleaner switches away from this tab —
+  // otherwise recognition keeps appending to a hidden textarea.
+  useEffect(() => {
+    if (!active && listening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setListening(false);
+    }
+  }, [active, listening]);
+
+  // Surface in-flight and unsent state to the parent so Finish Clean can guard.
+  useEffect(() => {
+    onBusyChange?.(parsing || submitting);
+  }, [parsing, submitting, onBusyChange]);
+
+  useEffect(() => {
+    const dirty = text.trim().length > 0 || items !== null || error !== null;
+    onDirtyChange?.(dirty);
+  }, [text, items, error, onDirtyChange]);
 
   function toggleVoice() {
     if (listening) {

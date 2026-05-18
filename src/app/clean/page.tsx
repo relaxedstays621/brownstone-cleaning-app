@@ -28,6 +28,8 @@ function CleanPageInner() {
   const [authChecked, setAuthChecked] = useState(false);
   const [showFinishModal, setShowFinishModal] = useState(false);
   const [finishing, setFinishing] = useState(false);
+  const [inventoryBusy, setInventoryBusy] = useState(false);
+  const [inventoryDirty, setInventoryDirty] = useState(false);
   const unsupportedBrowser = useUnsupportedBrowser();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -128,7 +130,12 @@ function CleanPageInner() {
           <PhotosTab cleanId={cleanId} />
         </div>
         <div className={activeTab === "inventory" ? "" : "hidden"}>
-          <InventoryTab property={property} />
+          <InventoryTab
+            property={property}
+            active={activeTab === "inventory"}
+            onBusyChange={setInventoryBusy}
+            onDirtyChange={setInventoryDirty}
+          />
         </div>
       </div>
 
@@ -149,9 +156,26 @@ function CleanPageInner() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl">
             <h2 className="text-lg font-bold mb-2">Finish Clean?</h2>
-            <p className="text-gray-600 mb-6">
+            <p className="text-gray-600 mb-4">
               Have you submitted all photos and logged all inventory requests?
             </p>
+
+            {inventoryBusy && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4">
+                <p className="text-yellow-900 text-sm font-medium">
+                  Inventory is still saving — wait a moment before finishing.
+                </p>
+              </div>
+            )}
+
+            {!inventoryBusy && inventoryDirty && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4">
+                <p className="text-yellow-900 text-sm font-medium">
+                  You have unsent inventory text or items. Submit them first or they&apos;ll be lost.
+                </p>
+              </div>
+            )}
+
             <div className="flex gap-3">
               <button
                 onClick={() => setShowFinishModal(false)}
@@ -162,10 +186,14 @@ function CleanPageInner() {
               </button>
               <button
                 onClick={handleFinishClean}
-                disabled={finishing}
-                className="flex-1 bg-green-600 text-white py-3 rounded-xl font-medium hover:bg-green-700 active:bg-green-800 transition-colors disabled:opacity-50"
+                disabled={finishing || inventoryBusy}
+                className="flex-1 bg-green-600 text-white py-3 rounded-xl font-medium hover:bg-green-700 active:bg-green-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {finishing ? "Finishing..." : "Yes, Finish Clean"}
+                {finishing
+                  ? "Finishing..."
+                  : inventoryBusy
+                  ? "Waiting on inventory..."
+                  : "Yes, Finish Clean"}
               </button>
             </div>
           </div>
