@@ -166,21 +166,24 @@ export default function PhotosTab({ cleanId }: Props) {
     const selected = Array.from(e.target.files || []);
     if (selected.length === 0) return;
 
-    setPhotos((prev) => {
-      const existingKeys = new Set(
-        prev.map((p) => `${p.file.name}|${p.file.size}|${p.file.lastModified}`)
-      );
-      const additions: PhotoItem[] = selected
-        .filter((file) => !existingKeys.has(`${file.name}|${file.size}|${file.lastModified}`))
-        .map((file) => ({
-          id: newId(),
-          file,
-          previewUrl: URL.createObjectURL(file),
-          status: "pending",
-        }));
-      return [...prev, ...additions];
-    });
-    setFinalizeError(null);
+    const existingKeys = new Set(
+      photos.map((p) => `${p.file.name}|${p.file.size}|${p.file.lastModified}`)
+    );
+    const additions: PhotoItem[] = selected
+      .filter((file) => !existingKeys.has(`${file.name}|${file.size}|${file.lastModified}`))
+      .map((file) => ({
+        id: newId(),
+        file,
+        previewUrl: URL.createObjectURL(file),
+        status: "pending",
+      }));
+
+    if (additions.length > 0) {
+      setPhotos((prev) => [...prev, ...additions]);
+      // Only clear an outstanding finalize error when there's new work to do;
+      // duplicate-only re-selection must not hide a still-stale sheet count.
+      setFinalizeError(null);
+    }
 
     // Reset the input so picking the same file again still fires a change event
     if (inputRef.current) inputRef.current.value = "";
