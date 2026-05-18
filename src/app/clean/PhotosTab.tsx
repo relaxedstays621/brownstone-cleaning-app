@@ -3,7 +3,7 @@
 import { useState, useRef } from "react";
 
 interface Props {
-  property: string;
+  cleanId: string;
 }
 
 type PhotoStatus = "pending" | "uploading" | "success" | "failed";
@@ -107,10 +107,10 @@ function newId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-async function uploadOne(property: string, photo: PhotoItem): Promise<void> {
+async function uploadOne(cleanId: string, photo: PhotoItem): Promise<void> {
   const blob = await processPhoto(photo.file);
   const fd = new FormData();
-  fd.append("property", property);
+  fd.append("cleanId", cleanId);
   fd.append("uploadId", photo.id);
   fd.append("photo", blob, `photo_${photo.id.slice(0, 8)}.jpg`);
 
@@ -140,11 +140,11 @@ async function runWithConcurrency<T>(
   await Promise.all(runners);
 }
 
-async function finalizeCount(property: string): Promise<void> {
+async function finalizeCount(cleanId: string): Promise<void> {
   const res = await fetch("/api/upload-photos/finalize", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ property }),
+    body: JSON.stringify({ cleanId }),
   });
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
@@ -156,7 +156,7 @@ async function finalizeCount(property: string): Promise<void> {
   }
 }
 
-export default function PhotosTab({ property }: Props) {
+export default function PhotosTab({ cleanId }: Props) {
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [uploading, setUploading] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
@@ -191,7 +191,7 @@ export default function PhotosTab({ property }: Props) {
 
     await runWithConcurrency(queue, UPLOAD_CONCURRENCY, async (photo) => {
       try {
-        await uploadOne(property, photo);
+        await uploadOne(cleanId, photo);
         updatePhoto(photo.id, { status: "success" });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Upload failed";
@@ -200,7 +200,7 @@ export default function PhotosTab({ property }: Props) {
     });
 
     try {
-      await finalizeCount(property);
+      await finalizeCount(cleanId);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sheet update failed";
       console.error("[PhotosTab] finalize failed:", err);
@@ -220,7 +220,7 @@ export default function PhotosTab({ property }: Props) {
   async function retryFinalize() {
     setFinalizeError(null);
     try {
-      await finalizeCount(property);
+      await finalizeCount(cleanId);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sheet update failed";
       setFinalizeError(message);

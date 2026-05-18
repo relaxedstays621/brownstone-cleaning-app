@@ -1,59 +1,42 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
-import { getDrive, DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
+import { getDrive } from "@/lib/google";
 import { withRetry } from "@/lib/retry";
 import { Readable } from "stream";
 
 const DRIVE_TIMEOUT_MS = 30_000;
 
-async function findOrCreateFolder(
+function escapeForDriveQuery(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+async function findSessionFolder(
   drive: ReturnType<typeof getDrive>,
-  name: string,
-  parentId: string
-): Promise<string> {
-  const safeName = name.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-  const query = `name='${safeName}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-
-  const list = await withRetry(
-    () =>
-      drive.files.list(
-        { q: query, fields: "files(id)", pageSize: 1 },
-        { timeout: DRIVE_TIMEOUT_MS }
-      ),
-    { label: `folder-list:${name}` }
+  cleanId: string
+): Promise<string | null> {
+  const safeId = escapeForDriveQuery(cleanId);
+  const q = `name='clean_${safeId}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  const res = await withRetry(
+    () => drive.files.list({ q, fields: "files(id)", pageSize: 1 }, { timeout: DRIVE_TIMEOUT_MS }),
+    { label: `session-folder:${cleanId.slice(0, 8)}` }
   );
-  if (list.data.files && list.data.files.length > 0) {
-    return list.data.files[0].id!;
-  }
-
-  const created = await withRetry(
-    () =>
-      drive.files.create(
-        {
-          requestBody: { name, mimeType: "application/vnd.google-apps.folder", parents: [parentId] },
-          fields: "id",
-        },
-        { timeout: DRIVE_TIMEOUT_MS }
-      ),
-    { label: `folder-create:${name}` }
-  );
-  return created.data.id!;
+  return res.data.files?.[0]?.id ?? null;
 }
 
 async function findExistingByUploadId(
   drive: ReturnType<typeof getDrive>,
   uploadId: string,
-  folderId: string
+  sessionFolderId: string
 ): Promise<string | null> {
-  const safe = uploadId.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-  const query = `'${folderId}' in parents and trashed=false and appProperties has { key='uploadId' and value='${safe}' }`;
+  const safe = escapeForDriveQuery(uploadId);
+  const q = `'${sessionFolderId}' in parents and trashed=false and appProperties has { key='uploadId' and value='${safe}' }`;
   const res = await withRetry(
     () =>
       drive.files.list(
-        { q: query, fields: "files(id)", pageSize: 1, spaces: "drive" },
+        { q, fields: "files(id)", pageSize: 1, spaces: "drive" },
         { timeout: DRIVE_TIMEOUT_MS }
       ),
-    { label: `dedup-lookup:${uploadId}` }
+    { label: `dedup-lookup:${uploadId.slice(0, 8)}` }
   );
   return res.data.files?.[0]?.id ?? null;
 }
@@ -71,26 +54,32 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid form data" }, { status: 400 });
   }
 
-  const property = formData.get("property") as string | null;
+  const cleanId = formData.get("cleanId") as string | null;
   const uploadId = formData.get("uploadId") as string | null;
   const file = formData.get("photo") as File | null;
 
-  if (!property || !uploadId || !file) {
+  if (!cleanId || !uploadId || !file) {
     return NextResponse.json(
-      { error: "Missing property, uploadId, or photo" },
+      { error: "Missing cleanId, uploadId, or photo" },
       { status: 400 }
     );
   }
 
-  console.log(`[upload-photos] property=${property} uploadId=${uploadId} size=${file.size}`);
+  console.log(
+    `[upload-photos] cleanId=${cleanId} uploadId=${uploadId} size=${file.size}`
+  );
 
   try {
     const drive = getDrive();
-    const dateStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-    const propertyFolderId = await findOrCreateFolder(drive, property, DRIVE_ROOT_FOLDER_ID);
-    const dateFolderId = await findOrCreateFolder(drive, dateStr, propertyFolderId);
+    const sessionFolderId = await findSessionFolder(drive, cleanId);
+    if (!sessionFolderId) {
+      return NextResponse.json(
+        { error: "Session folder not found — start a new clean" },
+        { status: 404 }
+      );
+    }
 
-    const existingId = await findExistingByUploadId(drive, uploadId, dateFolderId);
+    const existingId = await findExistingByUploadId(drive, uploadId, sessionFolderId);
     if (existingId) {
       console.log(`[upload-photos] dedup hit uploadId=${uploadId} fileId=${existingId}`);
       return NextResponse.json({ success: true, fileId: existingId, alreadyExisted: true });
@@ -114,7 +103,7 @@ export async function POST(req: NextRequest) {
           {
             requestBody: {
               name: fileName,
-              parents: [dateFolderId],
+              parents: [sessionFolderId],
               appProperties: { uploadId },
             },
             media: { mimeType: "image/jpeg", body: Readable.from(buffer) },
@@ -122,7 +111,7 @@ export async function POST(req: NextRequest) {
           },
           { timeout: DRIVE_TIMEOUT_MS }
         ),
-      { label: `file-create:${uploadId}` }
+      { label: `file-create:${uploadId.slice(0, 8)}` }
     );
 
     return NextResponse.json({ success: true, fileId: created.data.id, alreadyExisted: false });

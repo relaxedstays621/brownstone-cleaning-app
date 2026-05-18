@@ -32,16 +32,17 @@ function CleanPageInner() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const property = searchParams.get("property") || "";
+  const cleanId = searchParams.get("cleanId") || "";
 
   useEffect(() => {
     fetch("/api/auth/check")
       .then((r) => r.json())
       .then((data) => {
         if (!data.authenticated) router.replace("/");
-        else if (!property) router.replace("/select-property");
+        else if (!property || !cleanId) router.replace("/select-property");
         else setAuthChecked(true);
       });
-  }, [router, property]);
+  }, [router, property, cleanId]);
 
   async function handleFinishClean() {
     setFinishing(true);
@@ -49,7 +50,7 @@ function CleanPageInner() {
       const res = await fetch("/api/finish-clean", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ property }),
+        body: JSON.stringify({ property, cleanId }),
       });
       if (!res.ok) throw new Error("Failed");
       router.push("/select-property");
@@ -124,7 +125,7 @@ function CleanPageInner() {
       {/* Content */}
       <div className="max-w-lg mx-auto p-4">
         {activeTab === "photos" ? (
-          <PhotosTab property={property} />
+          <PhotosTab cleanId={cleanId} />
         ) : (
           <InventoryTab property={property} />
         )}

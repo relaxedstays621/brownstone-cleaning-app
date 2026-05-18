@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
-import { getDrive, getSheets, SHEET_ID, DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
+import {
+  getDrive,
+  getSheets,
+  SHEET_ID,
+  CLEAN_LOG_RANGE,
+  CLEAN_LOG_CLEAN_ID_COL,
+  CLEAN_LOG_PHOTOS_COL_LETTER,
+} from "@/lib/google";
 import { withRetry } from "@/lib/retry";
 
 const DRIVE_TIMEOUT_MS = 30_000;
@@ -10,20 +17,15 @@ function escapeForDriveQuery(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
 
-async function findFolder(
+async function findSessionFolder(
   drive: ReturnType<typeof getDrive>,
-  name: string,
-  parentId: string
+  cleanId: string
 ): Promise<string | null> {
-  const safeName = escapeForDriveQuery(name);
-  const query = `name='${safeName}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  const safeId = escapeForDriveQuery(cleanId);
+  const q = `name='clean_${safeId}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
   const res = await withRetry(
-    () =>
-      drive.files.list(
-        { q: query, fields: "files(id)", pageSize: 1 },
-        { timeout: DRIVE_TIMEOUT_MS }
-      ),
-    { label: `finalize-folder:${name}` }
+    () => drive.files.list({ q, fields: "files(id)", pageSize: 1 }, { timeout: DRIVE_TIMEOUT_MS }),
+    { label: "finalize-session-lookup" }
   );
   return res.data.files?.[0]?.id ?? null;
 }
@@ -59,38 +61,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  let body: { property?: string };
+  let body: { cleanId?: string };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
 
-  const property = body.property;
-  if (!property) {
-    return NextResponse.json({ error: "Missing property" }, { status: 400 });
+  const cleanId = body.cleanId;
+  if (!cleanId) {
+    return NextResponse.json({ error: "Missing cleanId" }, { status: 400 });
   }
 
   try {
     const drive = getDrive();
-    const dateStr = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
-
-    const propertyFolderId = await findFolder(drive, property, DRIVE_ROOT_FOLDER_ID);
-    if (!propertyFolderId) {
-      return NextResponse.json({ success: true, count: 0, note: "no property folder" });
-    }
-    const dateFolderId = await findFolder(drive, dateStr, propertyFolderId);
-    if (!dateFolderId) {
-      return NextResponse.json({ success: true, count: 0, note: "no date folder" });
+    const sessionFolderId = await findSessionFolder(drive, cleanId);
+    if (!sessionFolderId) {
+      return NextResponse.json(
+        { error: "Session folder not found", count: 0 },
+        { status: 404 }
+      );
     }
 
-    const count = await countImagesInFolder(drive, dateFolderId);
+    const count = await countImagesInFolder(drive, sessionFolderId);
 
     const sheets = getSheets();
     const logData = await withRetry(
       () =>
         sheets.spreadsheets.values.get(
-          { spreadsheetId: SHEET_ID, range: "Clean Log!A:E" },
+          { spreadsheetId: SHEET_ID, range: CLEAN_LOG_RANGE },
           { timeout: SHEETS_TIMEOUT_MS }
         ),
       { label: "finalize-sheet-read" }
@@ -98,13 +97,13 @@ export async function POST(req: NextRequest) {
     const rows = logData.data.values || [];
     let targetRow = -1;
     for (let i = rows.length - 1; i >= 0; i--) {
-      if (rows[i][1] === property && (!rows[i][3] || rows[i][3] === "")) {
+      if (rows[i][CLEAN_LOG_CLEAN_ID_COL] === cleanId) {
         targetRow = i + 1;
         break;
       }
     }
     if (targetRow < 0) {
-      return NextResponse.json({ success: true, count, note: "no in-progress clean row" });
+      return NextResponse.json({ success: true, count, note: "no row for cleanId" });
     }
 
     await withRetry(
@@ -112,7 +111,7 @@ export async function POST(req: NextRequest) {
         sheets.spreadsheets.values.update(
           {
             spreadsheetId: SHEET_ID,
-            range: `Clean Log!E${targetRow}`,
+            range: `Clean Log!${CLEAN_LOG_PHOTOS_COL_LETTER}${targetRow}`,
             valueInputOption: "USER_ENTERED",
             requestBody: { values: [[count.toString()]] },
           },
@@ -121,11 +120,11 @@ export async function POST(req: NextRequest) {
       { label: "finalize-sheet-write" }
     );
 
-    console.log(`[upload-photos/finalize] property=${property} count=${count} row=${targetRow}`);
+    console.log(`[finalize] cleanId=${cleanId} count=${count} row=${targetRow}`);
     return NextResponse.json({ success: true, count });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
-    console.error(`[upload-photos/finalize] failed property=${property}:`, err);
+    console.error(`[finalize] failed cleanId=${cleanId}:`, err);
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }

@@ -28,7 +28,10 @@ export default function SelectPropertyPage() {
       body: JSON.stringify({ property }),
     });
     if (res.ok) {
-      router.push(`/clean?property=${encodeURIComponent(property)}`);
+      const data = await res.json();
+      const params = new URLSearchParams({ property });
+      if (data?.cleanId) params.set("cleanId", data.cleanId);
+      router.push(`/clean?${params.toString()}`);
     } else {
       setLoading(false);
       alert("Failed to start clean. Please try again.");
