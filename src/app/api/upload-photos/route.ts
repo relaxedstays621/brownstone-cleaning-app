@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
-import { getDrive, getSheets, SHEET_ID, DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
+import { getDrive, DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
 import { withRetry } from "@/lib/retry";
 import { Readable } from "stream";
 
 const DRIVE_TIMEOUT_MS = 30_000;
-const SHEETS_TIMEOUT_MS = 15_000;
 
 async function findOrCreateFolder(
   drive: ReturnType<typeof getDrive>,
@@ -57,42 +56,6 @@ async function findExistingByUploadId(
     { label: `dedup-lookup:${uploadId}` }
   );
   return res.data.files?.[0]?.id ?? null;
-}
-
-async function incrementPhotoCount(property: string): Promise<void> {
-  const sheets = getSheets();
-  const logData = await withRetry(
-    () =>
-      sheets.spreadsheets.values.get(
-        { spreadsheetId: SHEET_ID, range: "Clean Log!A:E" },
-        { timeout: SHEETS_TIMEOUT_MS }
-      ),
-    { label: "sheet-read" }
-  );
-  const rows = logData.data.values || [];
-  let targetRow = -1;
-  for (let i = rows.length - 1; i >= 0; i--) {
-    if (rows[i][1] === property && (!rows[i][3] || rows[i][3] === "")) {
-      targetRow = i + 1;
-      break;
-    }
-  }
-  if (targetRow < 0) return;
-  const existing = rows[targetRow - 1][4];
-  const existingCount = existing ? parseInt(existing, 10) || 0 : 0;
-  await withRetry(
-    () =>
-      sheets.spreadsheets.values.update(
-        {
-          spreadsheetId: SHEET_ID,
-          range: `Clean Log!E${targetRow}`,
-          valueInputOption: "USER_ENTERED",
-          requestBody: { values: [[(existingCount + 1).toString()]] },
-        },
-        { timeout: SHEETS_TIMEOUT_MS }
-      ),
-    { label: "sheet-write" }
-  );
 }
 
 export async function POST(req: NextRequest) {
@@ -161,12 +124,6 @@ export async function POST(req: NextRequest) {
         ),
       { label: `file-create:${uploadId}` }
     );
-
-    try {
-      await incrementPhotoCount(property);
-    } catch (err) {
-      console.error(`[upload-photos] sheet count update failed (file uploaded ok):`, err);
-    }
 
     return NextResponse.json({ success: true, fileId: created.data.id, alreadyExisted: false });
   } catch (err) {

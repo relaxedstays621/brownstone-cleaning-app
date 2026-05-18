@@ -31,10 +31,17 @@ function isCanvasSupported(): boolean {
 
 function loadImage(file: File): Promise<HTMLImageElement | null> {
   return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
     const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => resolve(null);
-    img.src = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(null);
+    };
+    img.src = url;
   });
 }
 
@@ -133,33 +140,53 @@ async function runWithConcurrency<T>(
   await Promise.all(runners);
 }
 
+async function finalizeCount(property: string): Promise<void> {
+  const res = await fetch("/api/upload-photos/finalize", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ property }),
+  });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try {
+      const data = await res.json();
+      if (data?.error) msg = data.error;
+    } catch {}
+    throw new Error(msg);
+  }
+}
+
 export default function PhotosTab({ property }: Props) {
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const selected = Array.from(e.target.files || []);
-    const items: PhotoItem[] = selected.map((file) => ({
-      id: newId(),
-      file,
-      previewUrl: URL.createObjectURL(file),
-      status: "pending",
-    }));
-    setPhotos(items);
+    setPhotos((prev) => {
+      prev.forEach((p) => URL.revokeObjectURL(p.previewUrl));
+      return selected.map((file) => ({
+        id: newId(),
+        file,
+        previewUrl: URL.createObjectURL(file),
+        status: "pending",
+      }));
+    });
+    setFinalizeError(null);
   }
 
   function updatePhoto(id: string, patch: Partial<PhotoItem>) {
     setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   }
 
-  async function upload(targetIds?: Set<string>) {
-    const queue = photos.filter((p) =>
-      targetIds ? targetIds.has(p.id) : p.status !== "success"
-    );
+  async function upload(mode: "pending" | "failed") {
+    const targetStatus: PhotoStatus = mode;
+    const queue = photos.filter((p) => p.status === targetStatus);
     if (queue.length === 0) return;
 
     setUploading(true);
+    setFinalizeError(null);
     queue.forEach((p) => updatePhoto(p.id, { status: "uploading", error: undefined }));
 
     await runWithConcurrency(queue, UPLOAD_CONCURRENCY, async (photo) => {
@@ -172,13 +199,32 @@ export default function PhotosTab({ property }: Props) {
       }
     });
 
+    try {
+      await finalizeCount(property);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Sheet update failed";
+      console.error("[PhotosTab] finalize failed:", err);
+      setFinalizeError(message);
+    }
+
     setUploading(false);
   }
 
   function clearAll() {
     photos.forEach((p) => URL.revokeObjectURL(p.previewUrl));
     setPhotos([]);
+    setFinalizeError(null);
     if (inputRef.current) inputRef.current.value = "";
+  }
+
+  async function retryFinalize() {
+    setFinalizeError(null);
+    try {
+      await finalizeCount(property);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Sheet update failed";
+      setFinalizeError(message);
+    }
   }
 
   const successCount = photos.filter((p) => p.status === "success").length;
@@ -217,6 +263,20 @@ export default function PhotosTab({ property }: Props) {
               ? `${successCount} succeeded and won't be re-uploaded.`
               : ""}
           </p>
+        </div>
+      )}
+
+      {finalizeError && !uploading && (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 mb-4">
+          <p className="text-yellow-900 font-medium">
+            Photos are in Drive but the sheet count didn&apos;t update: {finalizeError}
+          </p>
+          <button
+            onClick={retryFinalize}
+            className="mt-2 bg-yellow-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-yellow-700"
+          >
+            Retry sheet update
+          </button>
         </div>
       )}
 
@@ -265,17 +325,24 @@ export default function PhotosTab({ property }: Props) {
           </div>
 
           <div className="flex gap-3">
-            {!allDone && (
+            {!allDone && pendingCount > 0 && (
               <button
-                onClick={() => upload()}
+                onClick={() => upload("pending")}
                 disabled={uploading}
                 className="flex-1 bg-blue-600 text-white py-3 rounded-xl text-lg font-medium hover:bg-blue-700 active:bg-blue-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {uploading
                   ? "Uploading..."
-                  : failedCount > 0
-                  ? `Retry ${failedCount} Failed`
                   : `Upload ${pendingCount} Photo${pendingCount !== 1 ? "s" : ""}`}
+              </button>
+            )}
+            {!allDone && pendingCount === 0 && failedCount > 0 && (
+              <button
+                onClick={() => upload("failed")}
+                disabled={uploading}
+                className="flex-1 bg-blue-600 text-white py-3 rounded-xl text-lg font-medium hover:bg-blue-700 active:bg-blue-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {uploading ? "Uploading..." : `Retry ${failedCount} Failed`}
               </button>
             )}
             {allDone && (
