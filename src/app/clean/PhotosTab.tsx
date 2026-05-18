@@ -164,16 +164,29 @@ export default function PhotosTab({ cleanId }: Props) {
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const selected = Array.from(e.target.files || []);
-    setPhotos((prev) => {
-      prev.forEach((p) => URL.revokeObjectURL(p.previewUrl));
-      return selected.map((file) => ({
+    if (selected.length === 0) return;
+
+    const existingKeys = new Set(
+      photos.map((p) => `${p.file.name}|${p.file.size}|${p.file.lastModified}`)
+    );
+    const additions: PhotoItem[] = selected
+      .filter((file) => !existingKeys.has(`${file.name}|${file.size}|${file.lastModified}`))
+      .map((file) => ({
         id: newId(),
         file,
         previewUrl: URL.createObjectURL(file),
         status: "pending",
       }));
-    });
-    setFinalizeError(null);
+
+    if (additions.length > 0) {
+      setPhotos((prev) => [...prev, ...additions]);
+      // Only clear an outstanding finalize error when there's new work to do;
+      // duplicate-only re-selection must not hide a still-stale sheet count.
+      setFinalizeError(null);
+    }
+
+    // Reset the input so picking the same file again still fires a change event
+    if (inputRef.current) inputRef.current.value = "";
   }
 
   function updatePhoto(id: string, patch: Partial<PhotoItem>) {
@@ -283,7 +296,9 @@ export default function PhotosTab({ cleanId }: Props) {
       <label className="block w-full cursor-pointer">
         <div className="bg-white border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:border-blue-400 transition-colors">
           <div className="text-4xl mb-2">📷</div>
-          <p className="text-gray-600 font-medium">Tap to select photos</p>
+          <p className="text-gray-600 font-medium">
+            {photos.length > 0 ? "Tap to add more photos" : "Tap to select photos"}
+          </p>
           <p className="text-gray-400 text-sm mt-1">Select multiple from camera roll</p>
         </div>
         <input
