@@ -22,21 +22,35 @@ export function getSheets() {
 export const SHEET_ID = process.env.GOOGLE_SHEET_ID!;
 export const DRIVE_ROOT_FOLDER_ID = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID!;
 
-const CLEAN_LOG_HEADERS = ["Date", "Property", "Start Time", "Finish Time", "# Photos"];
+const CLEAN_LOG_HEADERS = [
+  "Date",
+  "Property",
+  "Start Time",
+  "Finish Time",
+  "# Photos",
+  "Clean ID",
+];
 const INVENTORY_HEADERS = ["Date", "Property", "Item", "Quantity", "Notes", "Status"];
+
+export const CLEAN_LOG_RANGE = "Clean Log!A:F";
+export const CLEAN_LOG_CLEAN_ID_COL = 5; // 0-indexed in A:F
+export const CLEAN_LOG_PHOTOS_COL_LETTER = "E";
+export const CLEAN_LOG_CLEAN_ID_COL_LETTER = "F";
 
 export async function ensureSheetHeaders() {
   const sheets = getSheets();
 
-  // Check Clean Log tab
+  // Check Clean Log tab — read all 6 expected header cells so we can detect a 5-col legacy header
   const cleanLog = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: "Clean Log!A1:E1",
+    range: "Clean Log!A1:F1",
   });
-  if (!cleanLog.data.values || cleanLog.data.values.length === 0) {
+  const actualHeader = (cleanLog.data.values?.[0] ?? []) as string[];
+  const headerMismatch = CLEAN_LOG_HEADERS.some((h, i) => actualHeader[i] !== h);
+  if (headerMismatch) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_ID,
-      range: "Clean Log!A1:E1",
+      range: "Clean Log!A1:F1",
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [CLEAN_LOG_HEADERS] },
     });

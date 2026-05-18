@@ -1,27 +1,44 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
-import { getDrive, getSheets, SHEET_ID, DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
+import { getDrive } from "@/lib/google";
+import { withRetry } from "@/lib/retry";
 import { Readable } from "stream";
 
-async function findOrCreateFolder(
+const DRIVE_TIMEOUT_MS = 30_000;
+
+function escapeForDriveQuery(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+async function findSessionFolder(
   drive: ReturnType<typeof getDrive>,
-  name: string,
-  parentId: string
-): Promise<string> {
-  const query = `name='${name.replace(/'/g, "\\'")}' and '${parentId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`;
-  const res = await drive.files.list({ q: query, fields: "files(id)" });
-  if (res.data.files && res.data.files.length > 0) {
-    return res.data.files[0].id!;
-  }
-  const folder = await drive.files.create({
-    requestBody: {
-      name,
-      mimeType: "application/vnd.google-apps.folder",
-      parents: [parentId],
-    },
-    fields: "id",
-  });
-  return folder.data.id!;
+  cleanId: string
+): Promise<string | null> {
+  const safeId = escapeForDriveQuery(cleanId);
+  const q = `name='clean_${safeId}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  const res = await withRetry(
+    () => drive.files.list({ q, fields: "files(id)", pageSize: 1 }, { timeout: DRIVE_TIMEOUT_MS }),
+    { label: `session-folder:${cleanId.slice(0, 8)}` }
+  );
+  return res.data.files?.[0]?.id ?? null;
+}
+
+async function findExistingByUploadId(
+  drive: ReturnType<typeof getDrive>,
+  uploadId: string,
+  sessionFolderId: string
+): Promise<string | null> {
+  const safe = escapeForDriveQuery(uploadId);
+  const q = `'${sessionFolderId}' in parents and trashed=false and appProperties has { key='uploadId' and value='${safe}' }`;
+  const res = await withRetry(
+    () =>
+      drive.files.list(
+        { q, fields: "files(id)", pageSize: 1, spaces: "drive" },
+        { timeout: DRIVE_TIMEOUT_MS }
+      ),
+    { label: `dedup-lookup:${uploadId.slice(0, 8)}` }
+  );
+  return res.data.files?.[0]?.id ?? null;
 }
 
 export async function POST(req: NextRequest) {
@@ -29,92 +46,78 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const formData = await req.formData();
-  const property = formData.get("property") as string;
-  const files = formData.getAll("photos") as File[];
-
-  if (!property || files.length === 0) {
-    console.log("[upload-photos] Missing property or photos", { property, fileCount: files.length });
-    return NextResponse.json({ error: "Missing property or photos" }, { status: 400 });
+  let formData: FormData;
+  try {
+    formData = await req.formData();
+  } catch (err) {
+    console.error("[upload-photos] formData parse error:", err);
+    return NextResponse.json({ error: "Invalid form data" }, { status: 400 });
   }
 
-  console.log(`[upload-photos] Starting upload for ${files.length} photos to property: ${property}`);
+  const cleanId = formData.get("cleanId") as string | null;
+  const uploadId = formData.get("uploadId") as string | null;
+  const file = formData.get("photo") as File | null;
 
-  const drive = getDrive();
-  const now = new Date();
-  const dateStr = now.toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" }); // YYYY-MM-DD
+  if (!cleanId || !uploadId || !file) {
+    return NextResponse.json(
+      { error: "Missing cleanId, uploadId, or photo" },
+      { status: 400 }
+    );
+  }
 
-  // Create folder hierarchy: root > property > date
-  const propertyFolderId = await findOrCreateFolder(drive, property, DRIVE_ROOT_FOLDER_ID);
-  const dateFolderId = await findOrCreateFolder(drive, dateStr, propertyFolderId);
+  console.log(
+    `[upload-photos] cleanId=${cleanId} uploadId=${uploadId} size=${file.size}`
+  );
 
-  // Upload each photo
-  let uploadedCount = 0;
-  for (const file of files) {
-    console.log(`[upload-photos] Uploading photo ${uploadedCount + 1} of ${files.length}: ${file.name}`);
-    const timestamp = new Date();
-    const timeStr = timestamp.toLocaleTimeString("en-US", {
-      timeZone: "America/Los_Angeles",
-      hour12: false,
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }).replace(/:/g, "-");
+  try {
+    const drive = getDrive();
+    const sessionFolderId = await findSessionFolder(drive, cleanId);
+    if (!sessionFolderId) {
+      return NextResponse.json(
+        { error: "Session folder not found — start a new clean" },
+        { status: 404 }
+      );
+    }
 
-    const fileName = `photo_${timeStr}_${uploadedCount + 1}.jpg`;
+    const existingId = await findExistingByUploadId(drive, uploadId, sessionFolderId);
+    if (existingId) {
+      console.log(`[upload-photos] dedup hit uploadId=${uploadId} fileId=${existingId}`);
+      return NextResponse.json({ success: true, fileId: existingId, alreadyExisted: true });
+    }
+
+    const timeStr = new Date()
+      .toLocaleTimeString("en-US", {
+        timeZone: "America/Los_Angeles",
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      })
+      .replace(/:/g, "-");
+    const fileName = `photo_${timeStr}_${uploadId.slice(0, 8)}.jpg`;
     const buffer = Buffer.from(await file.arrayBuffer());
 
-    try {
-      const driveRes = await drive.files.create({
-        requestBody: {
-          name: fileName,
-          parents: [dateFolderId],
-        },
-        media: {
-          mimeType: "image/jpeg",
-          body: Readable.from(buffer),
-        },
-        fields: "id",
-      });
-      console.log(`[upload-photos] Successfully uploaded ${fileName} to Drive folder ${dateFolderId} (fileId: ${driveRes.data.id})`);
-    } catch (err) {
-      console.error(`[upload-photos] Failed to upload ${fileName}:`, err);
-      throw err;
-    }
-    uploadedCount++;
+    const created = await withRetry(
+      () =>
+        drive.files.create(
+          {
+            requestBody: {
+              name: fileName,
+              parents: [sessionFolderId],
+              appProperties: { uploadId },
+            },
+            media: { mimeType: "image/jpeg", body: Readable.from(buffer) },
+            fields: "id",
+          },
+          { timeout: DRIVE_TIMEOUT_MS }
+        ),
+      { label: `file-create:${uploadId.slice(0, 8)}` }
+    );
+
+    return NextResponse.json({ success: true, fileId: created.data.id, alreadyExisted: false });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    console.error(`[upload-photos] failed uploadId=${uploadId}:`, err);
+    return NextResponse.json({ error: message }, { status: 502 });
   }
-
-  // Update the Clean Log with photo count (column E)
-  // Find the matching row (most recent row with this property and no finish time)
-  const sheets = getSheets();
-  const logData = await sheets.spreadsheets.values.get({
-    spreadsheetId: SHEET_ID,
-    range: "Clean Log!A:E",
-  });
-
-  const rows = logData.data.values || [];
-  let targetRow = -1;
-  for (let i = rows.length - 1; i >= 0; i--) {
-    if (rows[i][1] === property && (!rows[i][3] || rows[i][3] === "")) {
-      targetRow = i + 1; // 1-indexed for Sheets API
-      break;
-    }
-  }
-
-  if (targetRow > 0) {
-    // Get existing photo count and add to it
-    const existing = rows[targetRow - 1][4];
-    const existingCount = existing ? parseInt(existing, 10) || 0 : 0;
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID,
-      range: `Clean Log!E${targetRow}`,
-      valueInputOption: "USER_ENTERED",
-      requestBody: {
-        values: [[(existingCount + uploadedCount).toString()]],
-      },
-    });
-  }
-
-  console.log(`[upload-photos] All ${uploadedCount} photos uploaded successfully for property: ${property}`);
-  return NextResponse.json({ success: true, count: uploadedCount });
 }

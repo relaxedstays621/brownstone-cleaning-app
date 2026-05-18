@@ -103,12 +103,20 @@ export default function InventoryTab({ property }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ property, items }),
       });
-      if (!res.ok) throw new Error("Failed");
+      if (!res.ok) {
+        let msg = `Failed (${res.status})`;
+        try {
+          const data = await res.json();
+          if (data?.error) msg = data.error;
+        } catch {}
+        throw new Error(msg);
+      }
       setSuccess(true);
       setItems(null);
       setText("");
-    } catch {
-      alert("Failed to submit. Please try again.");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      alert(`Failed to submit: ${message}. Please try again.`);
     } finally {
       setSubmitting(false);
     }
