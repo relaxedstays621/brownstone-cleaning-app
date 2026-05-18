@@ -169,9 +169,13 @@ function CleanPageInner() {
             )}
 
             {!inventoryBusy && inventoryDirty && (
-              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4">
-                <p className="text-yellow-900 text-sm font-medium">
-                  You have unsent inventory text or items. Submit them first or they&apos;ll be lost.
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+                <p className="text-red-900 text-sm font-medium">
+                  You have unsent inventory text or items.
+                </p>
+                <p className="text-red-800 text-sm mt-1">
+                  Tap <span className="font-semibold">Go Back</span> to submit them, or{" "}
+                  <span className="font-semibold">Finish anyway</span> to discard them.
                 </p>
               </div>
             )}
@@ -187,12 +191,18 @@ function CleanPageInner() {
               <button
                 onClick={handleFinishClean}
                 disabled={finishing || inventoryBusy}
-                className="flex-1 bg-green-600 text-white py-3 rounded-xl font-medium hover:bg-green-700 active:bg-green-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className={`flex-1 text-white py-3 rounded-xl font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  inventoryDirty
+                    ? "bg-red-600 hover:bg-red-700 active:bg-red-800"
+                    : "bg-green-600 hover:bg-green-700 active:bg-green-800"
+                }`}
               >
                 {finishing
                   ? "Finishing..."
                   : inventoryBusy
                   ? "Waiting on inventory..."
+                  : inventoryDirty
+                  ? "Finish anyway"
                   : "Yes, Finish Clean"}
               </button>
             </div>
