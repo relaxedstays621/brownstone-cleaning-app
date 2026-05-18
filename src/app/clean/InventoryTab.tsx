@@ -4,6 +4,9 @@ import { useState, useRef, useEffect } from "react";
 
 interface Props {
   property: string;
+  active: boolean;
+  onBusyChange?: (busy: boolean) => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
 interface InventoryItem {
@@ -15,13 +18,14 @@ interface InventoryItem {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SpeechRecognitionInstance = any;
 
-export default function InventoryTab({ property }: Props) {
+export default function InventoryTab({ property, active, onBusyChange, onDirtyChange }: Props) {
   const [text, setText] = useState("");
   const [listening, setListening] = useState(false);
   const [parsing, setParsing] = useState(false);
   const [items, setItems] = useState<InventoryItem[] | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const recognitionRef = useRef<SpeechRecognitionInstance>(null);
 
   useEffect(() => {
@@ -31,6 +35,25 @@ export default function InventoryTab({ property }: Props) {
       }
     };
   }, []);
+
+  // Stop voice recognition when the cleaner switches away from this tab —
+  // otherwise recognition keeps appending to a hidden textarea.
+  useEffect(() => {
+    if (!active && listening && recognitionRef.current) {
+      recognitionRef.current.stop();
+      setListening(false);
+    }
+  }, [active, listening]);
+
+  // Surface in-flight and unsent state to the parent so Finish Clean can guard.
+  useEffect(() => {
+    onBusyChange?.(parsing || submitting);
+  }, [parsing, submitting, onBusyChange]);
+
+  useEffect(() => {
+    const dirty = text.trim().length > 0 || items !== null || error !== null;
+    onDirtyChange?.(dirty);
+  }, [text, items, error, onDirtyChange]);
 
   function toggleVoice() {
     if (listening) {
@@ -79,16 +102,29 @@ export default function InventoryTab({ property }: Props) {
     if (!text.trim()) return;
     setParsing(true);
     setSuccess(false);
+    setError(null);
     try {
       const res = await fetch("/api/inventory/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
       });
+      if (!res.ok) {
+        let msg = `Couldn't process (${res.status})`;
+        try {
+          const data = await res.json();
+          if (data?.error) msg = data.error;
+        } catch {}
+        throw new Error(msg);
+      }
       const data = await res.json();
+      if (!Array.isArray(data?.items) || data.items.length === 0) {
+        throw new Error("No items were detected — try rephrasing");
+      }
       setItems(data.items);
-    } catch {
-      alert("Failed to process. Please try again.");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Couldn't process";
+      setError(message);
     } finally {
       setParsing(false);
     }
@@ -97,6 +133,7 @@ export default function InventoryTab({ property }: Props) {
   async function handleConfirm() {
     if (!items) return;
     setSubmitting(true);
+    setError(null);
     try {
       const res = await fetch("/api/inventory/confirm", {
         method: "POST",
@@ -116,7 +153,7 @@ export default function InventoryTab({ property }: Props) {
       setText("");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
-      alert(`Failed to submit: ${message}. Please try again.`);
+      setError(message);
     } finally {
       setSubmitting(false);
     }
@@ -128,6 +165,17 @@ export default function InventoryTab({ property }: Props) {
         <div className="bg-green-50 border border-green-200 rounded-xl p-4 mb-4 text-center">
           <div className="text-3xl mb-2">✅</div>
           <p className="text-green-800 font-medium">Inventory request submitted!</p>
+        </div>
+      )}
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-xl p-4 mb-4">
+          <p className="text-red-800 font-medium">
+            {items ? "Couldn't submit inventory" : "Couldn't process inventory"}: {error}
+          </p>
+          <p className="text-red-700 text-sm mt-1">
+            Your text is still here — tap {items ? "Confirm" : "Submit"} again to retry.
+          </p>
         </div>
       )}
 
