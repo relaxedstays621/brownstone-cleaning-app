@@ -21,8 +21,21 @@ export function getSheets() {
 
 export const SHEET_ID = process.env.GOOGLE_SHEET_ID!;
 export const DRIVE_ROOT_FOLDER_ID = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID!;
+export const MAINTENANCE_DRIVE_ROOT_FOLDER_ID =
+  process.env.GOOGLE_DRIVE_MAINTENANCE_FOLDER_ID ||
+  "1IK2ZfjC2Hsx5Mh8mvqwIxEqLEWkNBT5v";
 
 const CLEAN_LOG_HEADERS = [
+  "Date",
+  "Property",
+  "Start Time",
+  "Finish Time",
+  "# Photos",
+  "# Maintenance Photos",
+  "Inventory Request",
+  "Clean ID",
+];
+const LEGACY_CLEAN_LOG_HEADERS = [
   "Date",
   "Property",
   "Start Time",
@@ -31,84 +44,217 @@ const CLEAN_LOG_HEADERS = [
   "Clean ID",
 ];
 const INVENTORY_HEADERS = ["Date", "Property", "Item", "Quantity", "Notes", "Status"];
+const MAINTENANCE_HEADERS = [
+  "Date",
+  "Property",
+  "Start Time",
+  "Clean ID",
+  "Text",
+  "Status",
+];
 
-export const CLEAN_LOG_RANGE = "Clean Log!A:F";
-export const CLEAN_LOG_CLEAN_ID_COL = 5; // 0-indexed in A:F
+export const CLEAN_LOG_RANGE = "Clean Log!A:H";
+export const CLEAN_LOG_CLEAN_ID_COL = 7; // 0-indexed in A:H
 export const CLEAN_LOG_PHOTOS_COL_LETTER = "E";
-export const CLEAN_LOG_CLEAN_ID_COL_LETTER = "F";
+export const CLEAN_LOG_MAINTENANCE_PHOTOS_COL_LETTER = "F";
+export const CLEAN_LOG_INVENTORY_REQUEST_COL_LETTER = "G";
+export const CLEAN_LOG_CLEAN_ID_COL_LETTER = "H";
 
-export async function ensureSheetHeaders() {
-  const sheets = getSheets();
+async function migrateLegacyCleanLog(
+  sheets: ReturnType<typeof getSheets>,
+  existingHeader: string[]
+): Promise<boolean> {
+  // Legacy header had Clean ID at column F (index 5). Bail out if shape doesn't match.
+  if (existingHeader.length < 6 || existingHeader[5] !== "Clean ID") return false;
 
-  // Check Clean Log tab — read all 6 expected header cells so we can detect a 5-col legacy header
-  const cleanLog = await sheets.spreadsheets.values.get({
+  const legacy = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: "Clean Log!A1:F1",
+    range: "Clean Log!A2:F",
   });
-  const actualHeader = (cleanLog.data.values?.[0] ?? []) as string[];
-  const headerMismatch = CLEAN_LOG_HEADERS.some((h, i) => actualHeader[i] !== h);
-  if (headerMismatch) {
-    await sheets.spreadsheets.values.update({
-      spreadsheetId: SHEET_ID,
-      range: "Clean Log!A1:F1",
-      valueInputOption: "USER_ENTERED",
-      requestBody: { values: [CLEAN_LOG_HEADERS] },
-    });
+  const rows = legacy.data.values || [];
+
+  // Build the new A:H rectangle: keep cols A-E, blank F (Maintenance Photos) + G (Inventory Request), move legacy F (Clean ID) to H.
+  const migrated = rows.map((row) => {
+    const date = row[0] ?? "";
+    const property = row[1] ?? "";
+    const startTime = row[2] ?? "";
+    const finishTime = row[3] ?? "";
+    const photos = row[4] ?? "";
+    const cleanId = row[5] ?? "";
+    return [date, property, startTime, finishTime, photos, "", "", cleanId];
+  });
+
+  const writes: Array<{ range: string; values: string[][] }> = [
+    { range: "Clean Log!A1:H1", values: [CLEAN_LOG_HEADERS] },
+  ];
+  if (migrated.length > 0) {
+    writes.push({ range: `Clean Log!A2:H${migrated.length + 1}`, values: migrated });
+  }
+  // Wipe the now-stale column F values (legacy Clean ID) below the migrated rectangle, in case
+  // the legacy sheet had trailing rows we didn't read. Safe because we just wrote H with the IDs.
+  // (Skip — values.get with A2:F returned everything; rows already covers all data rows.)
+
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: { valueInputOption: "USER_ENTERED", data: writes },
+  });
+
+  console.log(
+    `[google.ts] Migrated Clean Log: ${migrated.length} row(s) — Clean ID moved F → H`
+  );
+  return true;
+}
+
+async function ensureCleanLogHeaders(sheets: ReturnType<typeof getSheets>) {
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: "Clean Log!A1:H1",
+  });
+  const actualHeader = (res.data.values?.[0] ?? []) as string[];
+
+  const matchesNew = CLEAN_LOG_HEADERS.every((h, i) => actualHeader[i] === h);
+  if (matchesNew) return;
+
+  const matchesLegacy = LEGACY_CLEAN_LOG_HEADERS.every((h, i) => actualHeader[i] === h);
+  if (matchesLegacy) {
+    const migrated = await migrateLegacyCleanLog(sheets, actualHeader);
+    if (migrated) return;
   }
 
-  // Check Inventory Requests tab
+  // Fresh sheet or unknown shape — write the headers and let downstream code populate.
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID,
+    range: "Clean Log!A1:H1",
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [CLEAN_LOG_HEADERS] },
+  });
+}
+
+async function ensureInventoryRequestsTab(sheets: ReturnType<typeof getSheets>) {
   const inventory = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
     range: "Inventory Requests!A1:F1",
   });
-  if (!inventory.data.values || inventory.data.values.length === 0) {
+  if (inventory.data.values && inventory.data.values.length > 0) return;
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId: SHEET_ID,
+    range: "Inventory Requests!A1:F1",
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [INVENTORY_HEADERS] },
+  });
+
+  const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+  const inventorySheet = spreadsheet.data.sheets?.find(
+    (s) => s.properties?.title === "Inventory Requests"
+  );
+  const sheetId = inventorySheet?.properties?.sheetId;
+  if (sheetId === undefined) return;
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SHEET_ID,
+    requestBody: {
+      requests: [
+        {
+          setDataValidation: {
+            range: {
+              sheetId,
+              startRowIndex: 1,
+              endRowIndex: 1000,
+              startColumnIndex: 5,
+              endColumnIndex: 6,
+            },
+            rule: {
+              condition: {
+                type: "ONE_OF_LIST",
+                values: [
+                  { userEnteredValue: "Pending" },
+                  { userEnteredValue: "Ordered" },
+                ],
+              },
+              showCustomUi: true,
+              strict: true,
+            },
+          },
+        },
+      ],
+    },
+  });
+}
+
+async function ensureMaintenanceRequestsTab(sheets: ReturnType<typeof getSheets>) {
+  const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+  const existing = spreadsheet.data.sheets?.find(
+    (s) => s.properties?.title === "Maintenance Requests"
+  );
+
+  let sheetId: number | undefined = existing?.properties?.sheetId ?? undefined;
+  if (!existing) {
+    const created = await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: {
+        requests: [
+          { addSheet: { properties: { title: "Maintenance Requests" } } },
+        ],
+      },
+    });
+    sheetId = created.data.replies?.[0]?.addSheet?.properties?.sheetId ?? undefined;
+  }
+
+  // Always make sure the header row matches — cheap and idempotent.
+  const header = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: "Maintenance Requests!A1:F1",
+  });
+  const actual = (header.data.values?.[0] ?? []) as string[];
+  const headerMismatch = MAINTENANCE_HEADERS.some((h, i) => actual[i] !== h);
+  if (headerMismatch) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_ID,
-      range: "Inventory Requests!A1:F1",
+      range: "Maintenance Requests!A1:F1",
       valueInputOption: "USER_ENTERED",
-      requestBody: { values: [INVENTORY_HEADERS] },
+      requestBody: { values: [MAINTENANCE_HEADERS] },
     });
+  }
 
-    // Get the sheet ID for Inventory Requests tab
-    const spreadsheet = await sheets.spreadsheets.get({
+  if (sheetId !== undefined && !existing) {
+    // Only add the dropdown on first creation — replaying setDataValidation on each
+    // boot would silently clobber any rule edits an operator made in the Sheets UI.
+    await sheets.spreadsheets.batchUpdate({
       spreadsheetId: SHEET_ID,
-    });
-    const inventorySheet = spreadsheet.data.sheets?.find(
-      (s) => s.properties?.title === "Inventory Requests"
-    );
-    const sheetId = inventorySheet?.properties?.sheetId;
-
-    if (sheetId !== undefined) {
-      // Add dropdown validation to Status column (F = index 5) for rows 2-1000
-      await sheets.spreadsheets.batchUpdate({
-        spreadsheetId: SHEET_ID,
-        requestBody: {
-          requests: [
-            {
-              setDataValidation: {
-                range: {
-                  sheetId,
-                  startRowIndex: 1,
-                  endRowIndex: 1000,
-                  startColumnIndex: 5,
-                  endColumnIndex: 6,
+      requestBody: {
+        requests: [
+          {
+            setDataValidation: {
+              range: {
+                sheetId,
+                startRowIndex: 1,
+                endRowIndex: 1000,
+                startColumnIndex: 5,
+                endColumnIndex: 6,
+              },
+              rule: {
+                condition: {
+                  type: "ONE_OF_LIST",
+                  values: [
+                    { userEnteredValue: "Pending" },
+                    { userEnteredValue: "Resolved" },
+                  ],
                 },
-                rule: {
-                  condition: {
-                    type: "ONE_OF_LIST",
-                    values: [
-                      { userEnteredValue: "Pending" },
-                      { userEnteredValue: "Ordered" },
-                    ],
-                  },
-                  showCustomUi: true,
-                  strict: true,
-                },
+                showCustomUi: true,
+                strict: true,
               },
             },
-          ],
-        },
-      });
-    }
+          },
+        ],
+      },
+    });
   }
+}
+
+export async function ensureSheetHeaders() {
+  const sheets = getSheets();
+  await ensureCleanLogHeaders(sheets);
+  await ensureInventoryRequestsTab(sheets);
+  await ensureMaintenanceRequestsTab(sheets);
 }

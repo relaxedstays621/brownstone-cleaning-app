@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 
 interface Props {
   property: string;
+  cleanId: string;
   active: boolean;
   onBusyChange?: (busy: boolean) => void;
   onDirtyChange?: (dirty: boolean) => void;
@@ -18,7 +19,7 @@ interface InventoryItem {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SpeechRecognitionInstance = any;
 
-export default function InventoryTab({ property, active, onBusyChange, onDirtyChange }: Props) {
+export default function InventoryTab({ property, cleanId, active, onBusyChange, onDirtyChange }: Props) {
   const [text, setText] = useState("");
   const [listening, setListening] = useState(false);
   const [parsing, setParsing] = useState(false);
@@ -138,7 +139,7 @@ export default function InventoryTab({ property, active, onBusyChange, onDirtyCh
       const res = await fetch("/api/inventory/confirm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ property, items }),
+        body: JSON.stringify({ property, cleanId, items }),
       });
       if (!res.ok) {
         let msg = `Failed (${res.status})`;
