@@ -106,9 +106,9 @@ export async function POST(req: NextRequest) {
         sheets.spreadsheets.values.append(
           {
             spreadsheetId: SHEET_ID,
-            range: "Clean Log!A:F",
+            range: "Clean Log!A:H",
             valueInputOption: "USER_ENTERED",
-            requestBody: { values: [[date, property, startTime, "", "", cleanId]] },
+            requestBody: { values: [[date, property, startTime, "", "", "", "", cleanId]] },
           },
           { timeout: SHEETS_TIMEOUT_MS }
         ),
