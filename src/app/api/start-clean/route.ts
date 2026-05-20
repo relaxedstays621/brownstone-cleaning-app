@@ -80,7 +80,9 @@ export async function POST(req: NextRequest) {
     );
     const dateFolderId = await findOrCreateFolder(drive, dateIso, propertyFolderId, "date");
 
-    // Session folder name embeds the UUID so it cannot collide with concurrent cleans
+    // Session folder name embeds the UUID so it cannot collide with concurrent cleans.
+    // appProperties carry the clean's start metadata so maintenance endpoints can
+    // recover date/property/startTime without a Sheets round-trip.
     const sessionFolder = await withRetry(
       () =>
         drive.files.create(
@@ -89,7 +91,7 @@ export async function POST(req: NextRequest) {
               name: sessionFolderName,
               mimeType: "application/vnd.google-apps.folder",
               parents: [dateFolderId],
-              appProperties: { cleanId },
+              appProperties: { cleanId, date, startTime, property },
             },
             fields: "id",
           },

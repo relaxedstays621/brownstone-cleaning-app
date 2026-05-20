@@ -4,6 +4,9 @@ import { useState, useEffect, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import PhotosTab from "./PhotosTab";
 import InventoryTab from "./InventoryTab";
+import MaintenanceTab from "./MaintenanceTab";
+
+type TabKey = "photos" | "inventory" | "maintenance";
 
 function useUnsupportedBrowser() {
   const [unsupported, setUnsupported] = useState(false);
@@ -24,12 +27,14 @@ function useUnsupportedBrowser() {
 }
 
 function CleanPageInner() {
-  const [activeTab, setActiveTab] = useState<"photos" | "inventory">("photos");
+  const [activeTab, setActiveTab] = useState<TabKey>("photos");
   const [authChecked, setAuthChecked] = useState(false);
   const [showFinishModal, setShowFinishModal] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [inventoryBusy, setInventoryBusy] = useState(false);
   const [inventoryDirty, setInventoryDirty] = useState(false);
+  const [maintenanceBusy, setMaintenanceBusy] = useState(false);
+  const [maintenanceDirty, setMaintenanceDirty] = useState(false);
   const unsupportedBrowser = useUnsupportedBrowser();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -71,6 +76,15 @@ function CleanPageInner() {
     );
   }
 
+  const tabs: { key: TabKey; label: string }[] = [
+    { key: "photos", label: "Submit Photos" },
+    { key: "inventory", label: "Report Inventory" },
+    { key: "maintenance", label: "Report Maintenance" },
+  ];
+
+  const anyBusy = inventoryBusy || maintenanceBusy;
+  const anyDirty = inventoryDirty || maintenanceDirty;
+
   return (
     <div className="min-h-screen bg-gray-50 pb-24">
       {/* Header */}
@@ -101,30 +115,23 @@ function CleanPageInner() {
       {/* Tabs */}
       <div className="bg-white border-b border-gray-200">
         <div className="max-w-lg mx-auto flex">
-          <button
-            onClick={() => setActiveTab("photos")}
-            className={`flex-1 py-3 text-center font-medium text-sm transition-colors ${
-              activeTab === "photos"
-                ? "text-blue-600 border-b-2 border-blue-600"
-                : "text-gray-500"
-            }`}
-          >
-            Submit Photos
-          </button>
-          <button
-            onClick={() => setActiveTab("inventory")}
-            className={`flex-1 py-3 text-center font-medium text-sm transition-colors ${
-              activeTab === "inventory"
-                ? "text-blue-600 border-b-2 border-blue-600"
-                : "text-gray-500"
-            }`}
-          >
-            Report Inventory
-          </button>
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setActiveTab(t.key)}
+              className={`flex-1 py-3 text-center font-medium text-xs sm:text-sm transition-colors ${
+                activeTab === t.key
+                  ? "text-blue-600 border-b-2 border-blue-600"
+                  : "text-gray-500"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
       </div>
 
-      {/* Content — both tabs stay mounted so state and in-flight requests survive a tab switch */}
+      {/* Content — all tabs stay mounted so state and in-flight requests survive a tab switch */}
       <div className="max-w-lg mx-auto p-4">
         <div className={activeTab === "photos" ? "" : "hidden"}>
           <PhotosTab cleanId={cleanId} />
@@ -132,9 +139,19 @@ function CleanPageInner() {
         <div className={activeTab === "inventory" ? "" : "hidden"}>
           <InventoryTab
             property={property}
+            cleanId={cleanId}
             active={activeTab === "inventory"}
             onBusyChange={setInventoryBusy}
             onDirtyChange={setInventoryDirty}
+          />
+        </div>
+        <div className={activeTab === "maintenance" ? "" : "hidden"}>
+          <MaintenanceTab
+            cleanId={cleanId}
+            property={property}
+            active={activeTab === "maintenance"}
+            onBusyChange={setMaintenanceBusy}
+            onDirtyChange={setMaintenanceDirty}
           />
         </div>
       </div>
@@ -157,25 +174,36 @@ function CleanPageInner() {
           <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl">
             <h2 className="text-lg font-bold mb-2">Finish Clean?</h2>
             <p className="text-gray-600 mb-4">
-              Have you submitted all photos and logged all inventory requests?
+              Have you submitted all photos and logged all inventory and maintenance reports?
             </p>
 
-            {inventoryBusy && (
+            {anyBusy && (
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4">
                 <p className="text-yellow-900 text-sm font-medium">
-                  Inventory is still saving — wait a moment before finishing.
+                  {inventoryBusy && maintenanceBusy
+                    ? "Inventory and maintenance are still saving"
+                    : inventoryBusy
+                    ? "Inventory is still saving"
+                    : "Maintenance is still saving"}{" "}
+                  — wait a moment before finishing.
                 </p>
               </div>
             )}
 
-            {!inventoryBusy && inventoryDirty && (
+            {!anyBusy && anyDirty && (
               <div className="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
                 <p className="text-red-900 text-sm font-medium">
-                  You have unsent inventory text or items.
+                  You have unsent{" "}
+                  {inventoryDirty && maintenanceDirty
+                    ? "inventory and maintenance"
+                    : inventoryDirty
+                    ? "inventory"
+                    : "maintenance"}{" "}
+                  work.
                 </p>
                 <p className="text-red-800 text-sm mt-1">
-                  Tap <span className="font-semibold">Go Back</span> to submit them, or{" "}
-                  <span className="font-semibold">Finish anyway</span> to discard them.
+                  Tap <span className="font-semibold">Go Back</span> to submit it, or{" "}
+                  <span className="font-semibold">Finish anyway</span> to discard it.
                 </p>
               </div>
             )}
@@ -190,18 +218,18 @@ function CleanPageInner() {
               </button>
               <button
                 onClick={handleFinishClean}
-                disabled={finishing || inventoryBusy}
+                disabled={finishing || anyBusy}
                 className={`flex-1 text-white py-3 rounded-xl font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                  inventoryDirty
+                  anyDirty
                     ? "bg-red-600 hover:bg-red-700 active:bg-red-800"
                     : "bg-green-600 hover:bg-green-700 active:bg-green-800"
                 }`}
               >
                 {finishing
                   ? "Finishing..."
-                  : inventoryBusy
-                  ? "Waiting on inventory..."
-                  : inventoryDirty
+                  : anyBusy
+                  ? "Waiting on submissions..."
+                  : anyDirty
                   ? "Finish anyway"
                   : "Yes, Finish Clean"}
               </button>
