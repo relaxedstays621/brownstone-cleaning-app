@@ -15,6 +15,18 @@ export function getDrive() {
   return google.drive({ version: "v3", auth: getAuth() });
 }
 
+// Cheap liveness check for /api/health: refresh an access token (hits Google's
+// token endpoint, no Drive/Sheets quota). Returns false on invalid_grant or any
+// failure — never throws, never leaks the token.
+export async function verifyGoogleAuth(): Promise<boolean> {
+  try {
+    const { token } = await getAuth().getAccessToken();
+    return typeof token === "string" && token.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export function getSheets() {
   return google.sheets({ version: "v4", auth: getAuth() });
 }
