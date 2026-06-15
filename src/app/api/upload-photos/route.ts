@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
-import { getDrive } from "@/lib/google";
+import { getDrive, appendUploadLog } from "@/lib/google";
 import { withRetry } from "@/lib/retry";
 import { Readable } from "stream";
 
@@ -128,6 +128,16 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error(`[upload-photos] failed uploadId=${uploadId}:`, err);
+    // Record the server-side failure (Drive/Sheets) the client only sees as a 502.
+    await appendUploadLog({
+      timestamp: new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" }),
+      event: "server-upload-error",
+      cleanId,
+      uploadId,
+      status: 502,
+      error: message,
+      photoSize: file.size,
+    });
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }

@@ -1,23 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
-
-const MAX_META_CHARS = 2_000;
+import { appendUploadLog } from "@/lib/google";
 
 interface ClientEventBody {
   event?: string;
   cleanId?: string;
+  property?: string;
   uploadId?: string;
   meta?: Record<string, unknown>;
 }
 
-function safeStringify(value: unknown): string {
-  try {
-    const json = JSON.stringify(value);
-    if (!json) return "";
-    return json.length > MAX_META_CHARS ? `${json.slice(0, MAX_META_CHARS)}…` : json;
-  } catch {
-    return "<unserializable>";
-  }
+function str(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function num(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function bool(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function nowPstString(): string {
+  return new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" });
 }
 
 export async function POST(req: NextRequest) {
@@ -34,16 +40,37 @@ export async function POST(req: NextRequest) {
     if (raw) body = JSON.parse(raw) as ClientEventBody;
   } catch {
     // Swallow — telemetry must never become a client-side failure.
+    return NextResponse.json({ ok: true });
   }
 
-  const event = typeof body.event === "string" ? body.event : "unknown";
-  const cleanId = typeof body.cleanId === "string" ? body.cleanId : "";
-  const uploadId = typeof body.uploadId === "string" ? body.uploadId : "";
-  const meta = body.meta && typeof body.meta === "object" ? safeStringify(body.meta) : "";
+  const meta = (body.meta && typeof body.meta === "object" ? body.meta : {}) as Record<
+    string,
+    unknown
+  >;
 
-  console.log(
-    `[client-event] event=${event} cleanId=${cleanId} uploadId=${uploadId} meta=${meta}`
-  );
+  // Persist to the Upload Log sheet so failures are diagnosable by device and
+  // connection long after the ephemeral docker logs roll over. Best-effort —
+  // appendUploadLog never throws, but guard anyway so telemetry can't 500.
+  try {
+    await appendUploadLog({
+      timestamp: nowPstString(),
+      event: str(body.event) ?? "unknown",
+      cleanId: str(body.cleanId),
+      property: str(body.property),
+      uploadId: str(body.uploadId),
+      status: str(meta.status) ?? num(meta.status),
+      error: str(meta.error),
+      photoSize: num(meta.photo_size) ?? num(meta.size),
+      processedSize: num(meta.processed_size),
+      attempts: num(meta.attempts),
+      durationMs: num(meta.duration_ms),
+      fellBack: bool(meta.fell_back),
+      userAgent: str(meta.ua),
+      connection: str(meta.conn),
+    });
+  } catch {
+    // Never surface telemetry failures.
+  }
 
   return NextResponse.json({ ok: true });
 }

@@ -35,6 +35,9 @@ export interface UploadFetchOptions {
   timeoutMs?: number;
   baseMs?: number;
   maxMs?: number;
+  // Called at the start of each fetch attempt (1-based). Lets callers record
+  // how many tries a photo actually took, for telemetry.
+  onAttempt?: (attempt: number) => void;
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -72,6 +75,7 @@ export async function uploadWithRetry(
   let lastErr: unknown;
   for (let attempt = 0; attempt < attempts; attempt++) {
     const isLast = attempt === attempts - 1;
+    opts.onAttempt?.(attempt + 1);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 

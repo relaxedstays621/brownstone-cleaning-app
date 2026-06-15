@@ -252,9 +252,120 @@ async function ensureMaintenanceRequestsTab(sheets: ReturnType<typeof getSheets>
   }
 }
 
+export const UPLOAD_LOG_TAB = "Upload Log";
+const UPLOAD_LOG_HEADERS = [
+  "Timestamp",
+  "Event",
+  "Clean ID",
+  "Property",
+  "Upload ID",
+  "Status",
+  "Error",
+  "Photo Size",
+  "Processed Size",
+  "Attempts",
+  "Duration (ms)",
+  "Fell Back",
+  "User Agent",
+  "Connection",
+];
+
+export interface UploadLogEntry {
+  timestamp: string;
+  event: string;
+  cleanId?: string;
+  property?: string;
+  uploadId?: string;
+  status?: string | number;
+  error?: string;
+  photoSize?: number;
+  processedSize?: number;
+  attempts?: number;
+  durationMs?: number;
+  fellBack?: boolean;
+  userAgent?: string;
+  connection?: string;
+}
+
+// Cached per server instance so we don't pay the create/header check on every
+// append. Reset to false only when the ensure fails, so we retry next time.
+let uploadLogTabReady = false;
+
+async function ensureUploadLogTab(sheets: ReturnType<typeof getSheets>) {
+  const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId: SHEET_ID });
+  const exists = spreadsheet.data.sheets?.some(
+    (s) => s.properties?.title === UPLOAD_LOG_TAB
+  );
+  if (!exists) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: SHEET_ID,
+      requestBody: {
+        requests: [{ addSheet: { properties: { title: UPLOAD_LOG_TAB } } }],
+      },
+    });
+  }
+
+  const header = await sheets.spreadsheets.values.get({
+    spreadsheetId: SHEET_ID,
+    range: `${UPLOAD_LOG_TAB}!A1:N1`,
+  });
+  const actual = (header.data.values?.[0] ?? []) as string[];
+  if (UPLOAD_LOG_HEADERS.some((h, i) => actual[i] !== h)) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `${UPLOAD_LOG_TAB}!A1:N1`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [UPLOAD_LOG_HEADERS] },
+    });
+  }
+}
+
+// Best-effort: appends one diagnostic row to the Upload Log tab. NEVER throws —
+// telemetry must not become a failure path for uploads or beacons.
+export async function appendUploadLog(entry: UploadLogEntry): Promise<void> {
+  try {
+    const sheets = getSheets();
+    if (!uploadLogTabReady) {
+      await ensureUploadLogTab(sheets);
+      uploadLogTabReady = true;
+    }
+    const row = [
+      entry.timestamp,
+      entry.event,
+      entry.cleanId ?? "",
+      entry.property ?? "",
+      entry.uploadId ?? "",
+      entry.status ?? "",
+      entry.error ?? "",
+      entry.photoSize ?? "",
+      entry.processedSize ?? "",
+      entry.attempts ?? "",
+      entry.durationMs ?? "",
+      entry.fellBack === undefined ? "" : entry.fellBack ? "yes" : "no",
+      entry.userAgent ?? "",
+      entry.connection ?? "",
+    ];
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: `${UPLOAD_LOG_TAB}!A:N`,
+      valueInputOption: "USER_ENTERED",
+      insertDataOption: "INSERT_ROWS",
+      requestBody: { values: [row] },
+    });
+  } catch (err) {
+    uploadLogTabReady = false;
+    console.error(
+      "[appendUploadLog] failed:",
+      err instanceof Error ? err.message : err
+    );
+  }
+}
+
 export async function ensureSheetHeaders() {
   const sheets = getSheets();
   await ensureCleanLogHeaders(sheets);
   await ensureInventoryRequestsTab(sheets);
   await ensureMaintenanceRequestsTab(sheets);
+  await ensureUploadLogTab(sheets);
+  uploadLogTabReady = true;
 }
