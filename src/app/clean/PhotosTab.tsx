@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from "react";
 import { useSearchParams } from "next/navigation";
 import { processPhotoResult, newId, runWithConcurrency } from "@/lib/photoProcess";
 import { reportClientEvent } from "@/lib/clientEvent";
@@ -8,6 +8,12 @@ import { uploadWithRetry, UploadHttpError } from "@/lib/uploadFetch";
 
 interface Props {
   cleanId: string;
+  onBusyChange?: (busy: boolean) => void;
+  onDirtyChange?: (dirty: boolean) => void;
+}
+
+export interface PhotosTabHandle {
+  submitAll: () => Promise<boolean>;
 }
 
 type PhotoStatus = "pending" | "uploading" | "success" | "failed";
@@ -137,7 +143,10 @@ async function finalizeCount(cleanId: string): Promise<void> {
   }
 }
 
-export default function PhotosTab({ cleanId }: Props) {
+const PhotosTab = forwardRef<PhotosTabHandle, Props>(function PhotosTab(
+  { cleanId, onBusyChange, onDirtyChange },
+  ref
+) {
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [uploading, setUploading] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
@@ -177,15 +186,15 @@ export default function PhotosTab({ cleanId }: Props) {
     setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   }
 
-  async function upload(mode: "pending" | "failed") {
-    const targetStatus: PhotoStatus = mode;
-    const queue = photos.filter((p) => p.status === targetStatus);
-    if (queue.length === 0) return;
+  async function uploadStatuses(statuses: PhotoStatus[]): Promise<boolean> {
+    const queue = photos.filter((p) => statuses.includes(p.status));
+    if (queue.length === 0) return true;
 
     setUploading(true);
     setFinalizeError(null);
     queue.forEach((p) => updatePhoto(p.id, { status: "uploading", error: undefined }));
 
+    let allOk = true;
     await runWithConcurrency(queue, UPLOAD_CONCURRENCY, async (photo) => {
       try {
         await uploadOne(cleanId, property, photo);
@@ -193,6 +202,7 @@ export default function PhotosTab({ cleanId }: Props) {
       } catch (err) {
         const message = err instanceof Error ? err.message : "Upload failed";
         updatePhoto(photo.id, { status: "failed", error: message });
+        allOk = false;
       }
     });
 
@@ -202,9 +212,15 @@ export default function PhotosTab({ cleanId }: Props) {
       const message = err instanceof Error ? err.message : "Sheet update failed";
       console.error("[PhotosTab] finalize failed:", err);
       setFinalizeError(message);
+      allOk = false;
     }
 
     setUploading(false);
+    return allOk;
+  }
+
+  async function upload(mode: "pending" | "failed") {
+    await uploadStatuses([mode]);
   }
 
   function clearAll() {
@@ -214,13 +230,15 @@ export default function PhotosTab({ cleanId }: Props) {
     if (inputRef.current) inputRef.current.value = "";
   }
 
-  async function retryFinalize() {
+  async function retryFinalize(): Promise<boolean> {
     setFinalizeError(null);
     try {
       await finalizeCount(cleanId);
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sheet update failed";
       setFinalizeError(message);
+      return false;
     }
   }
 
@@ -228,6 +246,30 @@ export default function PhotosTab({ cleanId }: Props) {
   const failedCount = photos.filter((p) => p.status === "failed").length;
   const pendingCount = photos.filter((p) => p.status === "pending").length;
   const allDone = photos.length > 0 && photos.every((p) => p.status === "success");
+
+  // Surface in-flight and unsent photo state to the parent so Finish Clean can
+  // guard on photos too — pending/failed photos or a stale sheet count must block
+  // a silent finish, same as inventory and maintenance.
+  useEffect(() => {
+    onBusyChange?.(uploading);
+  }, [uploading, onBusyChange]);
+
+  useEffect(() => {
+    const dirty = pendingCount > 0 || failedCount > 0 || finalizeError !== null;
+    onDirtyChange?.(dirty);
+  }, [pendingCount, failedCount, finalizeError, onDirtyChange]);
+
+  useImperativeHandle(ref, () => ({
+    async submitAll() {
+      const statuses: PhotoStatus[] = [];
+      if (pendingCount > 0) statuses.push("pending");
+      if (failedCount > 0) statuses.push("failed");
+      if (statuses.length > 0) return uploadStatuses(statuses);
+      // Photos are in Drive but the sheet count didn't update — retry just that.
+      if (finalizeError) return retryFinalize();
+      return true;
+    },
+  }));
 
   const statusBadge = (status: PhotoStatus): { label: string; cls: string } => {
     switch (status) {
@@ -357,4 +399,6 @@ export default function PhotosTab({ cleanId }: Props) {
       )}
     </div>
   );
-}
+});
+
+export default PhotosTab;
