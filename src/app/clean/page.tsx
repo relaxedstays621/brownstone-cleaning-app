@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import PhotosTab from "./PhotosTab";
-import InventoryTab from "./InventoryTab";
-import MaintenanceTab from "./MaintenanceTab";
+import InventoryTab, { type InventoryTabHandle } from "./InventoryTab";
+import MaintenanceTab, { type MaintenanceTabHandle } from "./MaintenanceTab";
 
 type TabKey = "photos" | "inventory" | "maintenance";
 
@@ -31,10 +31,14 @@ function CleanPageInner() {
   const [authChecked, setAuthChecked] = useState(false);
   const [showFinishModal, setShowFinishModal] = useState(false);
   const [finishing, setFinishing] = useState(false);
+  const [submittingAll, setSubmittingAll] = useState(false);
+  const [submitAllError, setSubmitAllError] = useState<string | null>(null);
   const [inventoryBusy, setInventoryBusy] = useState(false);
   const [inventoryDirty, setInventoryDirty] = useState(false);
   const [maintenanceBusy, setMaintenanceBusy] = useState(false);
   const [maintenanceDirty, setMaintenanceDirty] = useState(false);
+  const inventoryRef = useRef<InventoryTabHandle>(null);
+  const maintenanceRef = useRef<MaintenanceTabHandle>(null);
   const unsupportedBrowser = useUnsupportedBrowser();
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -65,6 +69,27 @@ function CleanPageInner() {
       alert("Failed to finish clean. Please try again.");
       setFinishing(false);
       setShowFinishModal(false);
+    }
+  }
+
+  async function handleSubmitAll() {
+    setSubmittingAll(true);
+    setSubmitAllError(null);
+    try {
+      const results = await Promise.all([
+        inventoryRef.current?.submitAll() ?? Promise.resolve(true),
+        maintenanceRef.current?.submitAll() ?? Promise.resolve(true),
+      ]);
+      const allOk = results.every(Boolean);
+      if (allOk) {
+        await handleFinishClean();
+      } else {
+        setSubmitAllError("Some items didn't submit — see the warnings above and try again.");
+      }
+    } catch (err) {
+      setSubmitAllError(err instanceof Error ? err.message : "Submit All failed");
+    } finally {
+      setSubmittingAll(false);
     }
   }
 
@@ -138,6 +163,7 @@ function CleanPageInner() {
         </div>
         <div className={activeTab === "inventory" ? "" : "hidden"}>
           <InventoryTab
+            ref={inventoryRef}
             property={property}
             cleanId={cleanId}
             active={activeTab === "inventory"}
@@ -147,6 +173,7 @@ function CleanPageInner() {
         </div>
         <div className={activeTab === "maintenance" ? "" : "hidden"}>
           <MaintenanceTab
+            ref={maintenanceRef}
             cleanId={cleanId}
             property={property}
             active={activeTab === "maintenance"}
@@ -202,35 +229,46 @@ function CleanPageInner() {
                   work.
                 </p>
                 <p className="text-red-800 text-sm mt-1">
-                  Tap <span className="font-semibold">Go Back</span> to submit it, or{" "}
-                  <span className="font-semibold">Finish anyway</span> to discard it.
+                  Tap <span className="font-semibold">Go Back</span> to review, or{" "}
+                  <span className="font-semibold">Submit All</span> to send it now and finish.
                 </p>
+              </div>
+            )}
+
+            {submitAllError && (
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4">
+                <p className="text-yellow-900 text-sm font-medium">{submitAllError}</p>
               </div>
             )}
 
             <div className="flex gap-3">
               <button
-                onClick={() => setShowFinishModal(false)}
-                disabled={finishing}
-                className="flex-1 bg-gray-200 text-gray-700 py-3 rounded-xl font-medium hover:bg-gray-300 transition-colors"
+                onClick={() => {
+                  setSubmitAllError(null);
+                  setShowFinishModal(false);
+                }}
+                disabled={finishing || submittingAll}
+                className="flex-1 bg-gray-200 text-gray-700 py-3 rounded-xl font-medium hover:bg-gray-300 transition-colors disabled:opacity-50"
               >
                 Go Back
               </button>
               <button
-                onClick={handleFinishClean}
-                disabled={finishing || anyBusy}
+                onClick={anyDirty ? handleSubmitAll : handleFinishClean}
+                disabled={finishing || submittingAll || anyBusy}
                 className={`flex-1 text-white py-3 rounded-xl font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                   anyDirty
-                    ? "bg-red-600 hover:bg-red-700 active:bg-red-800"
+                    ? "bg-blue-600 hover:bg-blue-700 active:bg-blue-800"
                     : "bg-green-600 hover:bg-green-700 active:bg-green-800"
                 }`}
               >
-                {finishing
+                {submittingAll
+                  ? "Submitting all..."
+                  : finishing
                   ? "Finishing..."
                   : anyBusy
                   ? "Waiting on submissions..."
                   : anyDirty
-                  ? "Finish anyway"
+                  ? "Submit All"
                   : "Yes, Finish Clean"}
               </button>
             </div>

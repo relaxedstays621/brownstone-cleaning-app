@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from "react";
 import { processPhoto, newId, runWithConcurrency } from "@/lib/photoProcess";
 import { reportClientEvent } from "@/lib/clientEvent";
 import { uploadWithRetry, UploadHttpError } from "@/lib/uploadFetch";
@@ -11,6 +11,10 @@ interface Props {
   active: boolean;
   onBusyChange?: (busy: boolean) => void;
   onDirtyChange?: (dirty: boolean) => void;
+}
+
+export interface MaintenanceTabHandle {
+  submitAll: () => Promise<boolean>;
 }
 
 type PhotoStatus = "pending" | "uploading" | "success" | "failed";
@@ -86,13 +90,10 @@ async function finalizeCount(cleanId: string): Promise<void> {
   }
 }
 
-export default function MaintenanceTab({
-  cleanId,
-  property,
-  active,
-  onBusyChange,
-  onDirtyChange,
-}: Props) {
+const MaintenanceTab = forwardRef<MaintenanceTabHandle, Props>(function MaintenanceTab(
+  { cleanId, property, active, onBusyChange, onDirtyChange },
+  ref
+) {
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [uploading, setUploading] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
@@ -156,14 +157,15 @@ export default function MaintenanceTab({
     setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   }
 
-  async function upload(mode: "pending" | "failed") {
-    const queue = photos.filter((p) => p.status === mode);
-    if (queue.length === 0) return;
+  async function uploadStatuses(statuses: PhotoStatus[]): Promise<boolean> {
+    const queue = photos.filter((p) => statuses.includes(p.status));
+    if (queue.length === 0) return true;
 
     setUploading(true);
     setFinalizeError(null);
     queue.forEach((p) => updatePhoto(p.id, { status: "uploading", error: undefined }));
 
+    let allOk = true;
     await runWithConcurrency(queue, UPLOAD_CONCURRENCY, async (photo) => {
       try {
         await uploadOne(cleanId, photo);
@@ -171,6 +173,7 @@ export default function MaintenanceTab({
       } catch (err) {
         const message = err instanceof Error ? err.message : "Upload failed";
         updatePhoto(photo.id, { status: "failed", error: message });
+        allOk = false;
       }
     });
 
@@ -180,9 +183,15 @@ export default function MaintenanceTab({
       const message = err instanceof Error ? err.message : "Sheet update failed";
       console.error("[MaintenanceTab] finalize failed:", err);
       setFinalizeError(message);
+      allOk = false;
     }
 
     setUploading(false);
+    return allOk;
+  }
+
+  async function upload(mode: "pending" | "failed") {
+    await uploadStatuses([mode]);
   }
 
   function clearAll() {
@@ -192,9 +201,9 @@ export default function MaintenanceTab({
     if (inputRef.current) inputRef.current.value = "";
   }
 
-  async function submitText() {
+  async function submitText(): Promise<boolean> {
     const trimmed = text.trim();
-    if (!trimmed) return;
+    if (!trimmed) return true;
     setSubmitting(true);
     setTextSuccess(false);
     setTextError(null);
@@ -214,13 +223,45 @@ export default function MaintenanceTab({
       }
       setText("");
       setTextSuccess(true);
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Couldn't submit";
       setTextError(message);
+      return false;
     } finally {
       setSubmitting(false);
     }
   }
+
+  async function retryFinalize(): Promise<boolean> {
+    setFinalizeError(null);
+    try {
+      await finalizeCount(cleanId);
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Sheet update failed";
+      setFinalizeError(message);
+      return false;
+    }
+  }
+
+  useImperativeHandle(ref, () => ({
+    async submitAll() {
+      const tasks: Promise<boolean>[] = [];
+      if (text.trim().length > 0) tasks.push(submitText());
+      const photoStatuses: PhotoStatus[] = [];
+      if (pendingCount > 0) photoStatuses.push("pending");
+      if (failedCount > 0) photoStatuses.push("failed");
+      if (photoStatuses.length > 0) {
+        tasks.push(uploadStatuses(photoStatuses));
+      } else if (finalizeError) {
+        tasks.push(retryFinalize());
+      }
+      if (tasks.length === 0) return true;
+      const results = await Promise.all(tasks);
+      return results.every(Boolean);
+    },
+  }));
 
   const statusBadge = (status: PhotoStatus): { label: string; cls: string } => {
     switch (status) {
@@ -390,4 +431,6 @@ export default function MaintenanceTab({
       </div>
     </div>
   );
-}
+});
+
+export default MaintenanceTab;
