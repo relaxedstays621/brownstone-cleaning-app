@@ -82,8 +82,8 @@ interface; used here only to validate the data).
 
 - **Filter = geography:** `address.city ∈ {"Cle Elum", "Ronald"}` (WA). `tags` are mostly empty +
   opaque numeric IDs (unusable as a filter); `listed` is `true` for all — so city is the reliable key.
-  - ⚠️ **Whidbey Island Retreat** (Oak Harbor, WA) is a Brownstone property but not in today's cleaning
-    list — **operator decision** whether to include it.
+  - **Whidbey Island Retreat** (Oak Harbor, WA) is **EXCLUDED** (operator decision 2026-06-15) — filter
+    stays Cle Elum/Ronald only; revisit if this team starts cleaning it.
 - **Display label = Hospitable `name`** (e.g. `'a - 100 Black Nugget Ln'`, `'4006  - Suncadia Unit'`),
   **NOT `public_name`** (the long marketing title like "4006 Suncadia Lodge Pool and Hot-Tub Access…").
   Normalize: strip the leading `'a - '/'b - '/'c - '` portfolio prefix + collapse whitespace →
@@ -105,8 +105,9 @@ interface; used here only to validate the data).
 4. WS3 health endpoint + uptime monitor (quick) → Sentry.
 5. WS4 Hospitable properties (next build; validate names via MCP first).
 
-## Decisions to confirm
-- **Failure log home:** Google Sheet "Upload Log" (recommended, no new infra) vs a log SaaS.
-- **Error tracking:** Sentry (recommended) vs sheet-only + cron digest.
-- **WS4 display name:** Hospitable property name as-is vs a mapping to the current `#### - Suncadia`
-  style (pull real names first to decide).
+## Decisions (locked 2026-06-15)
+- **Failure-log home → Google Sheet "Upload Log" tab** (no new infra; operator-readable).
+- **Error tracking → Sentry** (`@sentry/nextjs`) for stack-traced errors/breaks app-wide.
+- **WS4 display name → Hospitable `name`**, strip `a-/b-/c-` prefix + normalize whitespace (resolved
+  from the live pull).
+- **WS4 filter → `city ∈ {Cle Elum, Ronald}` only; Whidbey + Florida EXCLUDED.**
