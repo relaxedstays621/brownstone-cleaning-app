@@ -33,9 +33,13 @@ export function getSheets() {
 
 export const SHEET_ID = process.env.GOOGLE_SHEET_ID!;
 export const DRIVE_ROOT_FOLDER_ID = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID!;
+// Required env, same as SHEET_ID / DRIVE_ROOT_FOLDER_ID above. No literal
+// fallback on purpose: a stale hardcoded folder ID is exactly what caused the
+// maintenance-upload 502 (the old literal would silently misroute photos to an
+// unreachable folder). If the env var is missing this is undefined and the
+// Drive call fails loudly instead of writing to the wrong place.
 export const MAINTENANCE_DRIVE_ROOT_FOLDER_ID =
-  process.env.GOOGLE_DRIVE_MAINTENANCE_FOLDER_ID ||
-  "1IK2ZfjC2Hsx5Mh8mvqwIxEqLEWkNBT5v";
+  process.env.GOOGLE_DRIVE_MAINTENANCE_FOLDER_ID!;
 
 const CLEAN_LOG_HEADERS = [
   "Date",
