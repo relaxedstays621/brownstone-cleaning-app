@@ -5,6 +5,7 @@ import { getDrive, MAINTENANCE_DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
 import { withRetry } from "@/lib/retry";
 
 const DRIVE_TIMEOUT_MS = 30_000;
+const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
 
 function escapeForDriveQuery(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
@@ -89,6 +90,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { error: "Missing cleanId, uploadId, or photo" },
       { status: 400 }
+    );
+  }
+
+  // Processed photos are well under 1 MB; this only catches a raw original that
+  // slipped past the client guard. 413 is terminal client-side (not retried).
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return NextResponse.json(
+      { error: "Photo too large — please retake it" },
+      { status: 413 }
     );
   }
 
