@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { processPhoto, newId, runWithConcurrency } from "@/lib/photoProcess";
 import { reportClientEvent } from "@/lib/clientEvent";
+import { uploadWithRetry, UploadHttpError } from "@/lib/uploadFetch";
 
 interface Props {
   cleanId: string;
@@ -22,7 +23,8 @@ interface PhotoItem {
   error?: string;
 }
 
-const UPLOAD_CONCURRENCY = 3;
+// See PhotosTab: 2 keeps field-cellular uploads from contending for the pipe.
+const UPLOAD_CONCURRENCY = 2;
 
 async function uploadOne(cleanId: string, photo: PhotoItem): Promise<void> {
   reportClientEvent({
@@ -38,32 +40,27 @@ async function uploadOne(cleanId: string, photo: PhotoItem): Promise<void> {
   fd.append("uploadId", photo.id);
   fd.append("photo", blob, `maint_${photo.id.slice(0, 8)}.jpg`);
 
-  let res: Response;
   try {
-    res = await fetch("/api/maintenance/upload-photo", { method: "POST", body: fd });
+    // uploadWithRetry transparently retries transient network/timeout/5xx
+    // failures with backoff; only terminal errors reach here.
+    await uploadWithRetry("/api/maintenance/upload-photo", fd);
   } catch (err) {
-    reportClientEvent({
-      event: "maint-upload-network-error",
-      cleanId,
-      uploadId: photo.id,
-      meta: { error: err instanceof Error ? err.message : String(err) },
-    });
+    if (err instanceof UploadHttpError) {
+      reportClientEvent({
+        event: "maint-upload-failed",
+        cleanId,
+        uploadId: photo.id,
+        meta: { status: err.status, error: err.message },
+      });
+    } else {
+      reportClientEvent({
+        event: "maint-upload-network-error",
+        cleanId,
+        uploadId: photo.id,
+        meta: { error: err instanceof Error ? err.message : String(err) },
+      });
+    }
     throw err;
-  }
-
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    try {
-      const data = await res.json();
-      if (data?.error) msg = data.error;
-    } catch {}
-    reportClientEvent({
-      event: "maint-upload-failed",
-      cleanId,
-      uploadId: photo.id,
-      meta: { status: res.status, error: msg },
-    });
-    throw new Error(msg);
   }
 
   reportClientEvent({
