@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from "react";
 
 interface Props {
   property: string;
@@ -8,6 +8,10 @@ interface Props {
   active: boolean;
   onBusyChange?: (busy: boolean) => void;
   onDirtyChange?: (dirty: boolean) => void;
+}
+
+export interface InventoryTabHandle {
+  submitAll: () => Promise<boolean>;
 }
 
 interface InventoryItem {
@@ -19,7 +23,10 @@ interface InventoryItem {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type SpeechRecognitionInstance = any;
 
-export default function InventoryTab({ property, cleanId, active, onBusyChange, onDirtyChange }: Props) {
+const InventoryTab = forwardRef<InventoryTabHandle, Props>(function InventoryTab(
+  { property, cleanId, active, onBusyChange, onDirtyChange },
+  ref
+) {
   const [text, setText] = useState("");
   const [listening, setListening] = useState(false);
   const [parsing, setParsing] = useState(false);
@@ -99,30 +106,51 @@ export default function InventoryTab({ property, cleanId, active, onBusyChange, 
     setListening(true);
   }
 
+  async function parseText(rawText: string): Promise<InventoryItem[]> {
+    const res = await fetch("/api/inventory/parse", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: rawText }),
+    });
+    if (!res.ok) {
+      let msg = `Couldn't process (${res.status})`;
+      try {
+        const data = await res.json();
+        if (data?.error) msg = data.error;
+      } catch {}
+      throw new Error(msg);
+    }
+    const data = await res.json();
+    if (!Array.isArray(data?.items) || data.items.length === 0) {
+      throw new Error("No items were detected — try rephrasing");
+    }
+    return data.items;
+  }
+
+  async function confirmItems(toConfirm: InventoryItem[]): Promise<void> {
+    const res = await fetch("/api/inventory/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ property, cleanId, items: toConfirm }),
+    });
+    if (!res.ok) {
+      let msg = `Failed (${res.status})`;
+      try {
+        const data = await res.json();
+        if (data?.error) msg = data.error;
+      } catch {}
+      throw new Error(msg);
+    }
+  }
+
   async function handleParse() {
     if (!text.trim()) return;
     setParsing(true);
     setSuccess(false);
     setError(null);
     try {
-      const res = await fetch("/api/inventory/parse", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text }),
-      });
-      if (!res.ok) {
-        let msg = `Couldn't process (${res.status})`;
-        try {
-          const data = await res.json();
-          if (data?.error) msg = data.error;
-        } catch {}
-        throw new Error(msg);
-      }
-      const data = await res.json();
-      if (!Array.isArray(data?.items) || data.items.length === 0) {
-        throw new Error("No items were detected — try rephrasing");
-      }
-      setItems(data.items);
+      const parsed = await parseText(text);
+      setItems(parsed);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Couldn't process";
       setError(message);
@@ -136,19 +164,7 @@ export default function InventoryTab({ property, cleanId, active, onBusyChange, 
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch("/api/inventory/confirm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ property, cleanId, items }),
-      });
-      if (!res.ok) {
-        let msg = `Failed (${res.status})`;
-        try {
-          const data = await res.json();
-          if (data?.error) msg = data.error;
-        } catch {}
-        throw new Error(msg);
-      }
+      await confirmItems(items);
       setSuccess(true);
       setItems(null);
       setText("");
@@ -159,6 +175,52 @@ export default function InventoryTab({ property, cleanId, active, onBusyChange, 
       setSubmitting(false);
     }
   }
+
+  useImperativeHandle(ref, () => ({
+    async submitAll() {
+      // Confirm already-parsed items first; otherwise parse-then-confirm raw text.
+      if (items) {
+        setSubmitting(true);
+        setError(null);
+        try {
+          await confirmItems(items);
+          setSuccess(true);
+          setItems(null);
+          setText("");
+          return true;
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Unknown error");
+          return false;
+        } finally {
+          setSubmitting(false);
+        }
+      }
+      if (text.trim()) {
+        setParsing(true);
+        setSuccess(false);
+        setError(null);
+        try {
+          const parsed = await parseText(text);
+          setSubmitting(true);
+          try {
+            await confirmItems(parsed);
+            setSuccess(true);
+            setItems(null);
+            setText("");
+            return true;
+          } finally {
+            setSubmitting(false);
+          }
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Couldn't submit");
+          return false;
+        } finally {
+          setParsing(false);
+        }
+      }
+      return true;
+    },
+  }));
 
   return (
     <div>
@@ -247,4 +309,6 @@ export default function InventoryTab({ property, cleanId, active, onBusyChange, 
       )}
     </div>
   );
-}
+});
+
+export default InventoryTab;

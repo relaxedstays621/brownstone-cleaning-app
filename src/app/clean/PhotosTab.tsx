@@ -1,12 +1,19 @@
 "use client";
 
-import { useState, useRef } from "react";
-import { processPhoto, newId, runWithConcurrency } from "@/lib/photoProcess";
+import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from "react";
+import { useSearchParams } from "next/navigation";
+import { processPhotoResult, newId, runWithConcurrency } from "@/lib/photoProcess";
 import { reportClientEvent } from "@/lib/clientEvent";
 import { uploadWithRetry, UploadHttpError } from "@/lib/uploadFetch";
 
 interface Props {
   cleanId: string;
+  onBusyChange?: (busy: boolean) => void;
+  onDirtyChange?: (dirty: boolean) => void;
+}
+
+export interface PhotosTabHandle {
+  submitAll: () => Promise<boolean>;
 }
 
 type PhotoStatus = "pending" | "uploading" | "success" | "failed";
@@ -23,38 +30,83 @@ interface PhotoItem {
 // so a single photo's bytes aren't fighting two others for the same pipe.
 const UPLOAD_CONCURRENCY = 2;
 
-async function uploadOne(cleanId: string, photo: PhotoItem): Promise<void> {
+async function uploadOne(cleanId: string, property: string, photo: PhotoItem): Promise<void> {
+  const startedAt =
+    typeof performance !== "undefined" ? performance.now() : Date.now();
+  const photoSize = photo.file.size;
+  let attempts = 0;
+  let fellBack = false;
+  let processedSize = 0;
+
   reportClientEvent({
     event: "upload-attempt",
     cleanId,
+    property,
     uploadId: photo.id,
-    meta: { size: photo.file.size, type: photo.file.type },
+    meta: { photo_size: photoSize, type: photo.file.type },
   });
 
-  const blob = await processPhoto(photo.file);
+  let blob: Blob;
+  try {
+    const result = await processPhotoResult(photo.file);
+    blob = result.blob;
+    fellBack = result.fellBack;
+    processedSize = blob.size;
+  } catch (err) {
+    // Decode failed and the original is too large to send — surface "retake".
+    reportClientEvent({
+      event: "upload-failed",
+      cleanId,
+      property,
+      uploadId: photo.id,
+      meta: {
+        stage: "process",
+        error: err instanceof Error ? err.message : String(err),
+        photo_size: photoSize,
+      },
+    });
+    throw err;
+  }
+
   const fd = new FormData();
   fd.append("cleanId", cleanId);
   fd.append("uploadId", photo.id);
   fd.append("photo", blob, `photo_${photo.id.slice(0, 8)}.jpg`);
 
+  const durationMs = () =>
+    Math.round((typeof performance !== "undefined" ? performance.now() : Date.now()) - startedAt);
+
   try {
     // uploadWithRetry transparently retries transient network/timeout/5xx
     // failures with backoff; only terminal errors reach here.
-    await uploadWithRetry("/api/upload-photos", fd);
+    await uploadWithRetry("/api/upload-photos", fd, {
+      onAttempt: () => {
+        attempts += 1;
+      },
+    });
   } catch (err) {
+    const base = {
+      photo_size: photoSize,
+      processed_size: processedSize,
+      attempts,
+      duration_ms: durationMs(),
+      fell_back: fellBack,
+    };
     if (err instanceof UploadHttpError) {
       reportClientEvent({
         event: "upload-failed",
         cleanId,
+        property,
         uploadId: photo.id,
-        meta: { status: err.status, error: err.message },
+        meta: { ...base, status: err.status, error: err.message },
       });
     } else {
       reportClientEvent({
         event: "upload-network-error",
         cleanId,
+        property,
         uploadId: photo.id,
-        meta: { error: err instanceof Error ? err.message : String(err) },
+        meta: { ...base, error: err instanceof Error ? err.message : String(err) },
       });
     }
     throw err;
@@ -63,7 +115,15 @@ async function uploadOne(cleanId: string, photo: PhotoItem): Promise<void> {
   reportClientEvent({
     event: "upload-success",
     cleanId,
+    property,
     uploadId: photo.id,
+    meta: {
+      photo_size: photoSize,
+      processed_size: processedSize,
+      attempts,
+      duration_ms: durationMs(),
+      fell_back: fellBack,
+    },
   });
 }
 
@@ -83,11 +143,17 @@ async function finalizeCount(cleanId: string): Promise<void> {
   }
 }
 
-export default function PhotosTab({ cleanId }: Props) {
+const PhotosTab = forwardRef<PhotosTabHandle, Props>(function PhotosTab(
+  { cleanId, onBusyChange, onDirtyChange },
+  ref
+) {
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [uploading, setUploading] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Sourced from the URL (same as the clean page) so telemetry can record which
+  // property an upload belongs to without threading a new prop through page.tsx.
+  const property = useSearchParams().get("property") || "";
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const selected = Array.from(e.target.files || []);
@@ -120,22 +186,23 @@ export default function PhotosTab({ cleanId }: Props) {
     setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
   }
 
-  async function upload(mode: "pending" | "failed") {
-    const targetStatus: PhotoStatus = mode;
-    const queue = photos.filter((p) => p.status === targetStatus);
-    if (queue.length === 0) return;
+  async function uploadStatuses(statuses: PhotoStatus[]): Promise<boolean> {
+    const queue = photos.filter((p) => statuses.includes(p.status));
+    if (queue.length === 0) return true;
 
     setUploading(true);
     setFinalizeError(null);
     queue.forEach((p) => updatePhoto(p.id, { status: "uploading", error: undefined }));
 
+    let allOk = true;
     await runWithConcurrency(queue, UPLOAD_CONCURRENCY, async (photo) => {
       try {
-        await uploadOne(cleanId, photo);
+        await uploadOne(cleanId, property, photo);
         updatePhoto(photo.id, { status: "success" });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Upload failed";
         updatePhoto(photo.id, { status: "failed", error: message });
+        allOk = false;
       }
     });
 
@@ -145,9 +212,15 @@ export default function PhotosTab({ cleanId }: Props) {
       const message = err instanceof Error ? err.message : "Sheet update failed";
       console.error("[PhotosTab] finalize failed:", err);
       setFinalizeError(message);
+      allOk = false;
     }
 
     setUploading(false);
+    return allOk;
+  }
+
+  async function upload(mode: "pending" | "failed") {
+    await uploadStatuses([mode]);
   }
 
   function clearAll() {
@@ -157,13 +230,15 @@ export default function PhotosTab({ cleanId }: Props) {
     if (inputRef.current) inputRef.current.value = "";
   }
 
-  async function retryFinalize() {
+  async function retryFinalize(): Promise<boolean> {
     setFinalizeError(null);
     try {
       await finalizeCount(cleanId);
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : "Sheet update failed";
       setFinalizeError(message);
+      return false;
     }
   }
 
@@ -171,6 +246,30 @@ export default function PhotosTab({ cleanId }: Props) {
   const failedCount = photos.filter((p) => p.status === "failed").length;
   const pendingCount = photos.filter((p) => p.status === "pending").length;
   const allDone = photos.length > 0 && photos.every((p) => p.status === "success");
+
+  // Surface in-flight and unsent photo state to the parent so Finish Clean can
+  // guard on photos too — pending/failed photos or a stale sheet count must block
+  // a silent finish, same as inventory and maintenance.
+  useEffect(() => {
+    onBusyChange?.(uploading);
+  }, [uploading, onBusyChange]);
+
+  useEffect(() => {
+    const dirty = pendingCount > 0 || failedCount > 0 || finalizeError !== null;
+    onDirtyChange?.(dirty);
+  }, [pendingCount, failedCount, finalizeError, onDirtyChange]);
+
+  useImperativeHandle(ref, () => ({
+    async submitAll() {
+      const statuses: PhotoStatus[] = [];
+      if (pendingCount > 0) statuses.push("pending");
+      if (failedCount > 0) statuses.push("failed");
+      if (statuses.length > 0) return uploadStatuses(statuses);
+      // Photos are in Drive but the sheet count didn't update — retry just that.
+      if (finalizeError) return retryFinalize();
+      return true;
+    },
+  }));
 
   const statusBadge = (status: PhotoStatus): { label: string; cls: string } => {
     switch (status) {
@@ -300,4 +399,6 @@ export default function PhotosTab({ cleanId }: Props) {
       )}
     </div>
   );
-}
+});
+
+export default PhotosTab;

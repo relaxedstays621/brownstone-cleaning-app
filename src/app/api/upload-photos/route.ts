@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
-import { getDrive } from "@/lib/google";
+import { getDrive, appendUploadLog } from "@/lib/google";
 import { withRetry } from "@/lib/retry";
 import { Readable } from "stream";
 
 const DRIVE_TIMEOUT_MS = 30_000;
+const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
 
 function escapeForDriveQuery(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
@@ -65,6 +66,15 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // Processed photos are well under 1 MB; this only catches a raw original that
+  // slipped past the client guard. 413 is terminal client-side (not retried).
+  if (file.size > MAX_UPLOAD_BYTES) {
+    return NextResponse.json(
+      { error: "Photo too large — please retake it" },
+      { status: 413 }
+    );
+  }
+
   console.log(
     `[upload-photos] cleanId=${cleanId} uploadId=${uploadId} size=${file.size}`
   );
@@ -118,6 +128,16 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error(`[upload-photos] failed uploadId=${uploadId}:`, err);
+    // Record the server-side failure (Drive/Sheets) the client only sees as a 502.
+    await appendUploadLog({
+      timestamp: new Date().toLocaleString("en-US", { timeZone: "America/Los_Angeles" }),
+      event: "server-upload-error",
+      cleanId,
+      uploadId,
+      status: 502,
+      error: message,
+      photoSize: file.size,
+    });
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }
