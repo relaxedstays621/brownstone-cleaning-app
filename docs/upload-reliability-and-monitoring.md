@@ -70,20 +70,33 @@ Three layers — domain log (WS2) + uptime + error tracking:
   Upload Log sheet. *(Zero-SaaS alternative: skip Sentry, lean on the sheet + a cron error digest +
   uptime monitor — but Sentry is the right tool for stack-traced breaks.)*
 
-## WS4 — Hospitable live properties (next build)
-Replace the hardcoded `src/lib/properties.ts` list with a **live pull from Hospitable**.
-- **The app uses the Hospitable REST API** (a `HOSPITABLE_API_TOKEN` in env), **not the MCP** — the
-  MCP is the *agent* interface (I can use it to inspect/validate the real data; the app itself calls
-  the public API `GET /properties`).
-- **Cache, don't hammer:** a server route `/api/properties` that fetches + caches (in-memory TTL or
-  Next `revalidate` ~hourly/daily). **Fall back to the current hardcoded list if Hospitable is
-  unreachable** so the app never breaks if their API is down.
-- **Name mapping is the crux:** the current display is `"4006 - Suncadia Unit"`; Hospitable's property
-  name may differ. Decide the display string (Hospitable name as-is, or a mapping). *I can pull the
-  real Hospitable properties via the MCP now to validate the names/IDs and the mapping before the dev
-  builds — recommended.*
-- **Keep the Hospitable property ID** on the clean (even if not shown) — it unlocks later integration
-  (tie a clean to the reservation, auto-create a Hospitable task, pull next check-in, etc.).
+## WS4 — Hospitable live properties (next build) — GROUNDED via MCP pull (2026-06-15)
+Replace the hardcoded `src/lib/properties.ts` list with a **live pull from Hospitable**. The app uses
+the Hospitable **REST API** (`HOSPITABLE_API_TOKEN` in env), **not the MCP** (the MCP is the agent
+interface; used here only to validate the data).
+
+**Live account shape (verified):** **34 properties total**, but the cleaning team services only the
+**Cle Elum + Ronald, WA (Suncadia) set = 17**. The account also holds **16 Florida Disney homes**
+(Kissimmee/Davenport) + **1 Whidbey Island** (Oak Harbor) oceanfront — NOT cleaned by this team.
+➜ **A naive "list all properties" dumps all 34 (incl. Florida) into the picker. Filtering is required.**
+
+- **Filter = geography:** `address.city ∈ {"Cle Elum", "Ronald"}` (WA). `tags` are mostly empty +
+  opaque numeric IDs (unusable as a filter); `listed` is `true` for all — so city is the reliable key.
+  - ⚠️ **Whidbey Island Retreat** (Oak Harbor, WA) is a Brownstone property but not in today's cleaning
+    list — **operator decision** whether to include it.
+- **Display label = Hospitable `name`** (e.g. `'a - 100 Black Nugget Ln'`, `'4006  - Suncadia Unit'`),
+  **NOT `public_name`** (the long marketing title like "4006 Suncadia Lodge Pool and Hot-Tub Access…").
+  Normalize: strip the leading `'a - '/'b - '/'c - '` portfolio prefix + collapse whitespace →
+  `'100 Black Nugget Ln'`, `'4006 - Suncadia Unit'`. Matches the current `'#### - Suncadia Unit'` style.
+- **Value proof:** the live Cle Elum set has **2 units the hardcoded list is missing** —
+  `100 Black Nugget Ln` and `1170 Airport Road`. Going live auto-adds them (and future units), no code
+  change — the whole point.
+- **Keep the Hospitable `id` (UUID)** per property on the clean — unlocks later linkage (tie a clean to
+  the reservation, auto-create a Hospitable task, pull next check-in).
+- **Build:** server route `/api/properties` → Hospitable `GET /properties` (`per_page=100`, handle
+  pagination defensively) → filter to Cle Elum/Ronald → map+normalize `name` → keep `{id, label}` →
+  **cache** (TTL ~daily / Next `revalidate`) → **fall back to the current hardcoded list if Hospitable
+  is unreachable** so the picker never breaks.
 
 ## Sequencing
 1. Commit the in-flight reliability layer (uploadFetch + finalize + tabs).
