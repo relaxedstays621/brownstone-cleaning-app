@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import VersionGate from "./VersionGate";
+import SessionTimeout from "./SessionTimeout";
 
 export const metadata: Metadata = {
   title: "Brownstone Cleaning Tool",
@@ -20,6 +22,8 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="antialiased min-h-screen bg-gray-50">
+        <VersionGate />
+        <SessionTimeout />
         {children}
       </body>
     </html>

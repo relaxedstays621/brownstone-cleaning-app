@@ -58,6 +58,36 @@ function CleanPageInner() {
       });
   }, [router, property, cleanId]);
 
+  // Publish dirty/in-flight state to the global version gate + idle-logout so
+  // neither reloads nor logs out over unsaved or uploading work.
+  useEffect(() => {
+    const w = window as Window & { __cleanGuardReload?: boolean; __cleanBusy?: boolean };
+    // "busy" also covers the finish/submit-all network writes, so neither the
+    // version reload nor the idle logout can fire mid-write (e.g. over the
+    // in-flight /api/finish-clean POST after Submit All clears dirty/busy).
+    const busy =
+      photosBusy || inventoryBusy || maintenanceBusy || finishing || submittingAll;
+    w.__cleanBusy = busy;
+    w.__cleanGuardReload = busy || photosDirty || inventoryDirty || maintenanceDirty;
+  }, [
+    photosBusy,
+    inventoryBusy,
+    maintenanceBusy,
+    photosDirty,
+    inventoryDirty,
+    maintenanceDirty,
+    finishing,
+    submittingAll,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      const w = window as Window & { __cleanGuardReload?: boolean; __cleanBusy?: boolean };
+      w.__cleanGuardReload = false;
+      w.__cleanBusy = false;
+    };
+  }, []);
+
   async function handleFinishClean() {
     setFinishing(true);
     try {

@@ -4,6 +4,8 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 
+const APP_VERSION = process.env.NEXT_PUBLIC_APP_VERSION || "";
+
 export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -11,7 +13,7 @@ export default function LoginPage() {
   const router = useRouter();
 
   useEffect(() => {
-    fetch("/api/auth/check")
+    fetch("/api/auth/check", { headers: { "x-app-version": APP_VERSION } })
       .then((r) => r.json())
       .then((data) => {
         if (data.authenticated) router.replace("/select-property");
@@ -25,11 +27,15 @@ export default function LoginPage() {
     setError("");
     const res = await fetch("/api/auth", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-app-version": APP_VERSION },
       body: JSON.stringify({ password }),
     });
     if (res.ok) {
       router.push("/select-property");
+    } else if (res.status === 409) {
+      // Stale client — server is on a newer build. Force a refresh to current code.
+      setError("Update required — refreshing…");
+      setTimeout(() => window.location.reload(), 1200);
     } else {
       setError("Invalid password");
     }
