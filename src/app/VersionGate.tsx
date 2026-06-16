@@ -114,7 +114,18 @@ export default function VersionGate() {
     >
       Update available — we&apos;ll refresh automatically when your current work is saved.{" "}
       <button
-        onClick={() => hardReload()}
+        onClick={() => {
+          // Respect the same guard as the auto path: warn before discarding
+          // unsaved/uploading work if the cleaner taps Refresh mid-clean.
+          const guarded = !!(window as Window & { __cleanGuardReload?: boolean }).__cleanGuardReload;
+          if (
+            guarded &&
+            !window.confirm("You have unsaved or uploading work that may be lost. Refresh anyway?")
+          ) {
+            return;
+          }
+          hardReload();
+        }}
         style={{
           marginLeft: 8,
           textDecoration: "underline",
