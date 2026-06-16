@@ -58,6 +58,23 @@ function CleanPageInner() {
       });
   }, [router, property, cleanId]);
 
+  // Publish dirty/in-flight state to the global version gate + idle-logout so
+  // neither reloads nor logs out over unsaved or uploading work.
+  useEffect(() => {
+    const w = window as Window & { __cleanGuardReload?: boolean; __cleanBusy?: boolean };
+    const busy = photosBusy || inventoryBusy || maintenanceBusy;
+    w.__cleanBusy = busy;
+    w.__cleanGuardReload = busy || photosDirty || inventoryDirty || maintenanceDirty;
+  }, [photosBusy, inventoryBusy, maintenanceBusy, photosDirty, inventoryDirty, maintenanceDirty]);
+
+  useEffect(() => {
+    return () => {
+      const w = window as Window & { __cleanGuardReload?: boolean; __cleanBusy?: boolean };
+      w.__cleanGuardReload = false;
+      w.__cleanBusy = false;
+    };
+  }, []);
+
   async function handleFinishClean() {
     setFinishing(true);
     try {

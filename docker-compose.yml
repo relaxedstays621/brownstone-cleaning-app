@@ -1,6 +1,12 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      # Version stamp for the force-latest-version gate. Deploy with:
+      #   APP_VERSION=$(git rev-parse --short HEAD) docker compose build app
+      # If unset the gate is a harmless no-op.
+      args:
+        APP_VERSION: ${APP_VERSION:-}
     ports:
       - "3000:3000"
     env_file:
