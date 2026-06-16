@@ -10,6 +10,7 @@ interface Props {
   cleanId: string;
   onBusyChange?: (busy: boolean) => void;
   onDirtyChange?: (dirty: boolean) => void;
+  onCountChange?: (count: number) => void;
 }
 
 export interface PhotosTabHandle {
@@ -144,7 +145,7 @@ async function finalizeCount(cleanId: string): Promise<void> {
 }
 
 const PhotosTab = forwardRef<PhotosTabHandle, Props>(function PhotosTab(
-  { cleanId, onBusyChange, onDirtyChange },
+  { cleanId, onBusyChange, onDirtyChange, onCountChange },
   ref
 ) {
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
@@ -258,6 +259,13 @@ const PhotosTab = forwardRef<PhotosTabHandle, Props>(function PhotosTab(
     const dirty = pendingCount > 0 || failedCount > 0 || finalizeError !== null;
     onDirtyChange?.(dirty);
   }, [pendingCount, failedCount, finalizeError, onDirtyChange]);
+
+  // Report the count of photos confirmed-uploaded (server returned 200) so the
+  // Finish modal can show the cleaner "N photos uploaded" — the tripwire for a
+  // clean that's about to finish with 0 photos.
+  useEffect(() => {
+    onCountChange?.(successCount);
+  }, [successCount, onCountChange]);
 
   useImperativeHandle(ref, () => ({
     async submitAll() {

@@ -35,6 +35,8 @@ function CleanPageInner() {
   const [submitAllError, setSubmitAllError] = useState<string | null>(null);
   const [photosBusy, setPhotosBusy] = useState(false);
   const [photosDirty, setPhotosDirty] = useState(false);
+  const [photosCount, setPhotosCount] = useState(0);
+  const [maintenancePhotosCount, setMaintenancePhotosCount] = useState(0);
   const [inventoryBusy, setInventoryBusy] = useState(false);
   const [inventoryDirty, setInventoryDirty] = useState(false);
   const [maintenanceBusy, setMaintenanceBusy] = useState(false);
@@ -215,6 +217,7 @@ function CleanPageInner() {
             cleanId={cleanId}
             onBusyChange={setPhotosBusy}
             onDirtyChange={setPhotosDirty}
+            onCountChange={setPhotosCount}
           />
         </div>
         <div className={activeTab === "inventory" ? "" : "hidden"}>
@@ -235,6 +238,7 @@ function CleanPageInner() {
             active={activeTab === "maintenance"}
             onBusyChange={setMaintenanceBusy}
             onDirtyChange={setMaintenanceDirty}
+            onCountChange={setMaintenancePhotosCount}
           />
         </div>
       </div>
@@ -259,6 +263,31 @@ function CleanPageInner() {
             <p className="text-gray-600 mb-4">
               Have you submitted all photos and logged all inventory and maintenance reports?
             </p>
+
+            {/* Upload tripwire: show how many photos actually made it, so a clean
+                about to finish with 0 photos is obvious before it's too late. */}
+            <div
+              className={`rounded-lg p-3 mb-4 border ${
+                photosCount === 0 ? "bg-amber-50 border-amber-200" : "bg-gray-50 border-gray-200"
+              }`}
+            >
+              <p
+                className={`text-sm font-semibold ${
+                  photosCount === 0 ? "text-amber-900" : "text-gray-800"
+                }`}
+              >
+                📸 {photosCount} photo{photosCount === 1 ? "" : "s"} uploaded for this clean
+                {maintenancePhotosCount > 0
+                  ? ` · 🛠 ${maintenancePhotosCount} maintenance`
+                  : ""}
+              </p>
+              {photosCount === 0 && (
+                <p className="text-amber-800 text-xs mt-1">
+                  No photos uploaded yet. If you took photos, go to the Submit Photos tab and
+                  upload them before finishing.
+                </p>
+              )}
+            </div>
 
             {anyBusy && (
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-4">
