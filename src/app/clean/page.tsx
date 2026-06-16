@@ -35,8 +35,13 @@ function CleanPageInner() {
   const [submitAllError, setSubmitAllError] = useState<string | null>(null);
   const [photosBusy, setPhotosBusy] = useState(false);
   const [photosDirty, setPhotosDirty] = useState(false);
-  const [photosCount, setPhotosCount] = useState(0);
-  const [maintenancePhotosCount, setMaintenancePhotosCount] = useState(0);
+  // Ground-truth photo counts (from Drive via /api/photo-count), fetched when the
+  // Finish modal opens — survives clearAll / reload / a version-gate refresh, unlike
+  // a client-side tally.
+  const [photoCounts, setPhotoCounts] = useState<{ photos: number; maintenance: number } | null>(
+    null
+  );
+  const [countError, setCountError] = useState(false);
   const [inventoryBusy, setInventoryBusy] = useState(false);
   const [inventoryDirty, setInventoryDirty] = useState(false);
   const [maintenanceBusy, setMaintenanceBusy] = useState(false);
@@ -89,6 +94,27 @@ function CleanPageInner() {
       w.__cleanBusy = false;
     };
   }, []);
+
+  // When the Finish modal opens, read the real uploaded-photo count from Drive.
+  useEffect(() => {
+    if (!showFinishModal || !cleanId) return;
+    let cancelled = false;
+    setPhotoCounts(null);
+    setCountError(false);
+    fetch(`/api/photo-count?cleanId=${encodeURIComponent(cleanId)}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((data) => {
+        if (!cancelled) {
+          setPhotoCounts({ photos: data.photos ?? 0, maintenance: data.maintenance ?? 0 });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setCountError(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showFinishModal, cleanId]);
 
   async function handleFinishClean() {
     setFinishing(true);
@@ -217,7 +243,6 @@ function CleanPageInner() {
             cleanId={cleanId}
             onBusyChange={setPhotosBusy}
             onDirtyChange={setPhotosDirty}
-            onCountChange={setPhotosCount}
           />
         </div>
         <div className={activeTab === "inventory" ? "" : "hidden"}>
@@ -238,7 +263,6 @@ function CleanPageInner() {
             active={activeTab === "maintenance"}
             onBusyChange={setMaintenanceBusy}
             onDirtyChange={setMaintenanceDirty}
-            onCountChange={setMaintenancePhotosCount}
           />
         </div>
       </div>
@@ -264,28 +288,45 @@ function CleanPageInner() {
               Have you submitted all photos and logged all inventory and maintenance reports?
             </p>
 
-            {/* Upload tripwire: show how many photos actually made it, so a clean
-                about to finish with 0 photos is obvious before it's too late. */}
+            {/* Upload tripwire — real Drive count, so a clean about to finish with 0
+                photos is obvious before it's too late. The primary count is this
+                clean's photos; maintenance photos are a separate, incidental category. */}
             <div
               className={`rounded-lg p-3 mb-4 border ${
-                photosCount === 0 ? "bg-amber-50 border-amber-200" : "bg-gray-50 border-gray-200"
+                photoCounts && photoCounts.photos === 0
+                  ? "bg-amber-50 border-amber-200"
+                  : "bg-gray-50 border-gray-200"
               }`}
             >
-              <p
-                className={`text-sm font-semibold ${
-                  photosCount === 0 ? "text-amber-900" : "text-gray-800"
-                }`}
-              >
-                📸 {photosCount} photo{photosCount === 1 ? "" : "s"} uploaded for this clean
-                {maintenancePhotosCount > 0
-                  ? ` · 🛠 ${maintenancePhotosCount} maintenance`
-                  : ""}
-              </p>
-              {photosCount === 0 && (
-                <p className="text-amber-800 text-xs mt-1">
-                  No photos uploaded yet. If you took photos, go to the Submit Photos tab and
-                  upload them before finishing.
+              {!photoCounts && !countError ? (
+                <p className="text-sm font-medium text-gray-600">Checking uploaded photos…</p>
+              ) : countError ? (
+                <p className="text-sm font-medium text-gray-700">
+                  Couldn&apos;t verify uploaded photos — double-check before finishing if unsure.
                 </p>
+              ) : (
+                <>
+                  <p
+                    className={`text-sm font-semibold ${
+                      photoCounts!.photos === 0 ? "text-amber-900" : "text-gray-800"
+                    }`}
+                  >
+                    📸 {photoCounts!.photos} photo{photoCounts!.photos === 1 ? "" : "s"} uploaded
+                    for this clean
+                  </p>
+                  {photoCounts!.maintenance > 0 && (
+                    <p className="text-xs text-gray-600 mt-1">
+                      🛠 {photoCounts!.maintenance} maintenance photo
+                      {photoCounts!.maintenance === 1 ? "" : "s"}
+                    </p>
+                  )}
+                  {photoCounts!.photos === 0 && (
+                    <p className="text-amber-800 text-xs mt-1">
+                      No photos uploaded yet. If you took photos, go to the Submit Photos tab and
+                      upload them before finishing.
+                    </p>
+                  )}
+                </>
               )}
             </div>
 

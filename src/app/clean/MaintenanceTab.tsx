@@ -11,7 +11,6 @@ interface Props {
   active: boolean;
   onBusyChange?: (busy: boolean) => void;
   onDirtyChange?: (dirty: boolean) => void;
-  onCountChange?: (count: number) => void;
 }
 
 export interface MaintenanceTabHandle {
@@ -92,7 +91,7 @@ async function finalizeCount(cleanId: string): Promise<void> {
 }
 
 const MaintenanceTab = forwardRef<MaintenanceTabHandle, Props>(function MaintenanceTab(
-  { cleanId, property, active, onBusyChange, onDirtyChange, onCountChange },
+  { cleanId, property, active, onBusyChange, onDirtyChange },
   ref
 ) {
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
@@ -123,11 +122,6 @@ const MaintenanceTab = forwardRef<MaintenanceTabHandle, Props>(function Maintena
       finalizeError !== null;
     onDirtyChange?.(dirty);
   }, [text, pendingCount, failedCount, textError, finalizeError, onDirtyChange]);
-
-  // Report confirmed-uploaded maintenance photo count for the Finish modal summary.
-  useEffect(() => {
-    onCountChange?.(successCount);
-  }, [successCount, onCountChange]);
 
   // Hide visible-when-active feedback when the cleaner navigates away.
   useEffect(() => {
