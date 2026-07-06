@@ -44,6 +44,11 @@ function hardReload() {
 
 export default function VersionGate() {
   const [mismatch, setMismatch] = useState(false);
+  // True when a confirmed mismatch can't auto-reload because clean work is BUSY
+  // (uploads/writes in flight) — which, for a client stuck retrying failed
+  // uploads, may never clear. Drives the assertive "tap to update" banner so the
+  // cleaner has a manual escape instead of being trapped on old code.
+  const [busyDeferred, setBusyDeferred] = useState(false);
   const reloadedRef = useRef(false);
 
   async function check() {
@@ -83,7 +88,11 @@ export default function VersionGate() {
     if (!mismatch) return;
     const tryReload = () => {
       if (reloadedRef.current) return;
-      const guarded = !!(window as Window & { __cleanGuardReload?: boolean }).__cleanGuardReload;
+      const w = window as Window & { __cleanGuardReload?: boolean; __cleanBusy?: boolean };
+      const guarded = !!w.__cleanGuardReload;
+      // Surface the manual escape when auto-reload is deferred specifically by
+      // busy (in-flight/possibly-stuck uploads), not merely by unsaved-but-idle work.
+      setBusyDeferred(guarded && !!w.__cleanBusy);
       if (!guarded && !recentlyReloaded()) {
         reloadedRef.current = true;
         hardReload();
@@ -112,7 +121,9 @@ export default function VersionGate() {
         fontWeight: 600,
       }}
     >
-      Update available — we&apos;ll refresh automatically when your current work is saved.{" "}
+      {busyDeferred
+        ? "A new version is available — tap to update."
+        : "Update available — we’ll refresh automatically when your current work is saved."}{" "}
       <button
         onClick={() => {
           // Respect the same guard as the auto path: warn before discarding
@@ -136,7 +147,7 @@ export default function VersionGate() {
           font: "inherit",
         }}
       >
-        Refresh now
+        {busyDeferred ? "Update now" : "Refresh now"}
       </button>
     </div>
   );

@@ -3,6 +3,7 @@ import { Readable } from "stream";
 import { isAuthenticated } from "@/lib/auth";
 import { getDrive, MAINTENANCE_DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
 import { withRetry } from "@/lib/retry";
+import { isAbortLike } from "@/lib/uploadAbort";
 
 const DRIVE_TIMEOUT_MS = 30_000;
 const MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
@@ -78,8 +79,16 @@ export async function POST(req: NextRequest) {
   try {
     formData = await req.formData();
   } catch (err) {
-    console.error("[maint-upload] formData parse error:", err);
-    return NextResponse.json({ error: "Invalid form data" }, { status: 400 });
+    // An aborted / connection-reset body (dropped cellular mid-upload) is
+    // transient, not malformed — return a retryable 408 so uploadWithRetry
+    // re-sends. Safe: the route dedups by uploadId (findExistingByUploadId), so a
+    // re-send can't duplicate in Drive. Keep 400 only for a truly malformed body.
+    const status = isAbortLike(err) ? 408 : 400;
+    console.error(`[maint-upload] formData parse error (status=${status}):`, err);
+    return NextResponse.json(
+      { error: status === 408 ? "Upload interrupted — please retry" : "Invalid form data" },
+      { status }
+    );
   }
 
   const cleanId = formData.get("cleanId") as string | null;
