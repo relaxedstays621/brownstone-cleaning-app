@@ -1,3 +1,11 @@
+// Static fallback for the property picker. The live source is /api/properties
+// (a weekly Hospitable pull); this list is served only when Hospitable is
+// unreachable. Each label is ALSO the Drive folder name + sheet Property value, so
+// every entry must match that property's EXISTING Drive folder exactly (verified
+// against `matt@brownstonevacations.com` My Drive 2026-07-10) — a divergent label
+// silently creates a second folder and splits the property's photos. These are the
+// canonical forms `/api/properties`' normalizeLabel() produces from Hospitable's
+// (inconsistently-formatted) `name`; keep the two in lockstep.
 export const PROPERTIES = [
   "4006 - Suncadia Unit",
   "4008 - Suncadia Unit",
@@ -14,6 +22,9 @@ export const PROPERTIES = [
   "4038 - Suncadia Unit",
   "6052 - Suncadia Unit",
   "5040 - Suncadia Unit",
+  "100 Black Nugget Ln",
+  "1170 Airport Road",
+  "127 Big Hill",
 ] as const;
 
 export type Property = (typeof PROPERTIES)[number];

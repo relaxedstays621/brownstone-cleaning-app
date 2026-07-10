@@ -4,10 +4,21 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { PROPERTIES } from "@/lib/properties";
 
+interface PropertyOption {
+  id: string;
+  label: string;
+}
+
 export default function SelectPropertyPage() {
   const [property, setProperty] = useState("");
   const [loading, setLoading] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
+  // Seed with the static list so the picker renders instantly and still works if
+  // /api/properties is slow or Hospitable is down; replace with the live set once
+  // it loads. The value is always the label (the Drive folder + sheet SoR).
+  const [options, setOptions] = useState<PropertyOption[]>(
+    PROPERTIES.map((label) => ({ id: "", label }))
+  );
   const router = useRouter();
 
   useEffect(() => {
@@ -18,6 +29,27 @@ export default function SelectPropertyPage() {
         else setAuthChecked(true);
       });
   }, [router]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/properties")
+      .then((r) => r.json())
+      .then((data) => {
+        if (
+          !cancelled &&
+          Array.isArray(data?.properties) &&
+          data.properties.length > 0
+        ) {
+          setOptions(data.properties as PropertyOption[]);
+        }
+      })
+      .catch(() => {
+        // Keep the static seed — the picker must never break.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function handleStart() {
     if (!property) return;
@@ -57,9 +89,9 @@ export default function SelectPropertyPage() {
             className="w-full px-4 py-3 border border-gray-300 rounded-xl text-lg focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
           >
             <option value="">Choose a property...</option>
-            {PROPERTIES.map((p) => (
-              <option key={p} value={p}>
-                {p}
+            {options.map((p) => (
+              <option key={p.label} value={p.label}>
+                {p.label}
               </option>
             ))}
           </select>
