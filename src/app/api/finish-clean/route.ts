@@ -19,6 +19,7 @@ const WEBHOOK_TIMEOUT_MS = 10_000;
 // Clean Log column indexes (0-based within A:H), for reading the row we matched.
 const COL_DATE = 0;
 const COL_START_TIME = 2;
+const COL_FINISH_TIME = 3; // col D — written exactly once at finish; presence = already notified
 const COL_INVENTORY_REQUEST = 6; // col G — "Yes" once inventory/confirm marks it
 
 function escapeForDriveQuery(s: string): string {
@@ -181,7 +182,17 @@ export async function POST(req: NextRequest) {
 
     const matchedRow = targetRow > 0 ? rows[targetRow - 1] ?? [] : [];
 
-    if (targetRow > 0) {
+    // Idempotency (WS3: exactly one Slack notification per clean). Col D (Finish
+    // Time) is written exactly once — here. If the matched row already carries it,
+    // this call is a double-submit / replay / operator retry: reconcile the photo
+    // counts from Drive (cheap, idempotent) but DON'T rewrite the finish time or
+    // re-fire the finish webhook. The legacy no-cleanId fallback above only ever
+    // matches empty-D rows, so this can only trip on the cleanId path.
+    const existingFinish = String(matchedRow[COL_FINISH_TIME] ?? "").trim();
+    const alreadyFinished = targetRow > 0 && existingFinish !== "";
+    const recordedFinish = alreadyFinished ? existingFinish : finishTime;
+
+    if (targetRow > 0 && !alreadyFinished) {
       await withRetry(
         () =>
           sheets.spreadsheets.values.update(
@@ -250,19 +261,26 @@ export async function POST(req: NextRequest) {
 
     // Fire the complete finish-time notification (best-effort, env-gated). All
     // fields derived server-side so Slack can't show blanks like the old
-    // start-time trigger did.
-    await postFinishWebhook({
-      property: (matchedRow[1] as string) || property || "",
-      cleanId: cleanId || "",
-      date: (matchedRow[COL_DATE] as string) || "",
-      startTime: (matchedRow[COL_START_TIME] as string) || "",
-      finishTime,
-      photoCount,
-      maintenancePhotoCount,
-      inventoryRequest: (matchedRow[COL_INVENTORY_REQUEST] as string) || "",
-    });
+    // start-time trigger did. Gated on this being the FIRST finish for the row so
+    // a replay/retry never doubles the Slack post.
+    if (!alreadyFinished) {
+      await postFinishWebhook({
+        property: (matchedRow[1] as string) || property || "",
+        cleanId: cleanId || "",
+        date: (matchedRow[COL_DATE] as string) || "",
+        startTime: (matchedRow[COL_START_TIME] as string) || "",
+        finishTime: recordedFinish,
+        photoCount,
+        maintenancePhotoCount,
+        inventoryRequest: (matchedRow[COL_INVENTORY_REQUEST] as string) || "",
+      });
+    } else {
+      console.log(
+        `[finish-clean] duplicate finish ignored (already notified) cleanId=${cleanId}`
+      );
+    }
 
-    return NextResponse.json({ success: true, finishTime });
+    return NextResponse.json({ success: true, finishTime: recordedFinish, alreadyFinished });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("[finish-clean] failed:", err);

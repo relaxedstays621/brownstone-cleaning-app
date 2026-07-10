@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isAuthenticated } from "@/lib/auth";
 import { PROPERTIES } from "@/lib/properties";
 
 // Live property picker source. Replaces the hardcoded list so new Suncadia units
@@ -113,6 +114,13 @@ function respond(
 }
 
 export async function GET(req: NextRequest) {
+  // Property names are operational data — the picker is authenticated UI, so this
+  // route requires the same session as every other app API. (Health/monitoring
+  // has its own unauthenticated route; this is not it.)
+  if (!(await isAuthenticated())) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const force = new URL(req.url).searchParams.get("refresh") === "1";
   const now = Date.now();
 
