@@ -6,6 +6,7 @@ import {
   SHEET_ID,
   CLEAN_LOG_RANGE,
   CLEAN_LOG_CLEAN_ID_COL,
+  CLEAN_LOG_PHOTOS_COL_LETTER,
   CLEAN_LOG_MAINTENANCE_PHOTOS_COL_LETTER,
   MAINTENANCE_DRIVE_ROOT_FOLDER_ID,
 } from "@/lib/google";
@@ -13,9 +14,63 @@ import { withRetry } from "@/lib/retry";
 
 const DRIVE_TIMEOUT_MS = 30_000;
 const SHEETS_TIMEOUT_MS = 15_000;
+const WEBHOOK_TIMEOUT_MS = 10_000;
+
+// Clean Log column indexes (0-based within A:H), for reading the row we matched.
+const COL_DATE = 0;
+const COL_START_TIME = 2;
+const COL_INVENTORY_REQUEST = 6; // col G — "Yes" once inventory/confirm marks it
 
 function escapeForDriveQuery(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+}
+
+async function countImagesInFolder(
+  drive: ReturnType<typeof getDrive>,
+  folderId: string
+): Promise<number> {
+  let total = 0;
+  let pageToken: string | undefined = undefined;
+  do {
+    const res = await withRetry(
+      () =>
+        drive.files.list(
+          {
+            q: `'${folderId}' in parents and trashed=false and mimeType contains 'image/'`,
+            fields: "files(id),nextPageToken",
+            pageSize: 1000,
+            pageToken,
+          },
+          { timeout: DRIVE_TIMEOUT_MS }
+        ),
+      { label: "finish-clean:count" }
+    );
+    total += res.data.files?.length ?? 0;
+    pageToken = res.data.nextPageToken ?? undefined;
+  } while (pageToken);
+  return total;
+}
+
+// Cleaning photos live in the `clean_<cleanId>` session folder (created by
+// start-clean). We reconcile col E from Drive at finish — WS2 dropped the
+// per-batch finalize, so this is now the single source of truth for the count.
+async function countCleaningPhotos(
+  drive: ReturnType<typeof getDrive>,
+  cleanId: string
+): Promise<number> {
+  const safeId = escapeForDriveQuery(cleanId);
+  const q = `name='clean_${safeId}' and mimeType='application/vnd.google-apps.folder' and trashed=false`;
+  const res = await withRetry(
+    () =>
+      drive.files.list(
+        { q, fields: "files(id)", pageSize: 1 },
+        { timeout: DRIVE_TIMEOUT_MS }
+      ),
+    { label: "finish-clean:clean-folder" }
+  );
+  const folderId = res.data.files?.[0]?.id;
+  if (!folderId) return 0;
+  return countImagesInFolder(drive, folderId);
 }
 
 async function countMaintenancePhotos(
@@ -35,27 +90,49 @@ async function countMaintenancePhotos(
   );
   const folderId = folderRes.data.files?.[0]?.id;
   if (!folderId) return 0;
+  return countImagesInFolder(drive, folderId);
+}
 
-  let total = 0;
-  let pageToken: string | undefined = undefined;
-  do {
-    const res = await withRetry(
-      () =>
-        drive.files.list(
-          {
-            q: `'${folderId}' in parents and trashed=false and mimeType contains 'image/'`,
-            fields: "files(id),nextPageToken",
-            pageSize: 1000,
-            pageToken,
-          },
-          { timeout: DRIVE_TIMEOUT_MS }
-        ),
-      { label: "finish-clean:maint-count" }
+interface FinishPayload {
+  property: string;
+  cleanId: string;
+  date: string;
+  startTime: string;
+  finishTime: string;
+  photoCount: number | null;
+  maintenancePhotoCount: number | null;
+  inventoryRequest: string;
+}
+
+// Best-effort finish notification. Fires the complete, finish-time payload to the
+// n8n Webhook node so Slack reflects real data — the old Sheets `rowAdded` trigger
+// fired at START, always blank. Gated on the env being set (local/non-prod stays
+// silent). NEVER throws into the finish response — mirrors appendUploadLog.
+async function postFinishWebhook(payload: FinishPayload): Promise<void> {
+  const url = process.env.CLEAN_FINISH_WEBHOOK_URL;
+  if (!url) return;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), WEBHOOK_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      console.error(
+        `[finish-clean] webhook non-OK status=${res.status} cleanId=${payload.cleanId}`
+      );
+    }
+  } catch (err) {
+    console.error(
+      `[finish-clean] webhook post failed cleanId=${payload.cleanId}:`,
+      err instanceof Error ? err.message : err
     );
-    total += res.data.files?.length ?? 0;
-    pageToken = res.data.nextPageToken ?? undefined;
-  } while (pageToken);
-  return total;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -102,6 +179,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const matchedRow = targetRow > 0 ? rows[targetRow - 1] ?? [] : [];
+
     if (targetRow > 0) {
       await withRetry(
         () =>
@@ -118,12 +197,38 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Best-effort: refresh the Maintenance Photos count so a finish always reflects
-    // current Drive state, even if an earlier maint-finalize call dropped.
+    // Reconcile both photo counts from Drive ground truth so a finish always
+    // reflects current state — even if an earlier per-photo write dropped. Each is
+    // best-effort: a count failure must not fail the finish. Counts feed both the
+    // sheet cells and the finish webhook payload.
+    let photoCount: number | null = null;
+    let maintenancePhotoCount: number | null = null;
     if (cleanId && targetRow > 0) {
+      const drive = getDrive();
       try {
-        const drive = getDrive();
+        const count = await countCleaningPhotos(drive, cleanId);
+        photoCount = count;
+        await withRetry(
+          () =>
+            sheets.spreadsheets.values.update(
+              {
+                spreadsheetId: SHEET_ID,
+                range: `Clean Log!${CLEAN_LOG_PHOTOS_COL_LETTER}${targetRow}`,
+                valueInputOption: "USER_ENTERED",
+                requestBody: { values: [[count.toString()]] },
+              },
+              { timeout: SHEETS_TIMEOUT_MS }
+            ),
+          { label: "finish-clean:photo-write" }
+        );
+        console.log(`[finish-clean] cleaning photos cleanId=${cleanId} count=${count}`);
+      } catch (err) {
+        console.error(`[finish-clean] cleaning count failed cleanId=${cleanId}:`, err);
+      }
+
+      try {
         const count = await countMaintenancePhotos(drive, cleanId);
+        maintenancePhotoCount = count;
         await withRetry(
           () =>
             sheets.spreadsheets.values.update(
@@ -142,6 +247,20 @@ export async function POST(req: NextRequest) {
         console.error(`[finish-clean] maintenance count failed cleanId=${cleanId}:`, err);
       }
     }
+
+    // Fire the complete finish-time notification (best-effort, env-gated). All
+    // fields derived server-side so Slack can't show blanks like the old
+    // start-time trigger did.
+    await postFinishWebhook({
+      property: (matchedRow[1] as string) || property || "",
+      cleanId: cleanId || "",
+      date: (matchedRow[COL_DATE] as string) || "",
+      startTime: (matchedRow[COL_START_TIME] as string) || "",
+      finishTime,
+      photoCount,
+      maintenancePhotoCount,
+      inventoryRequest: (matchedRow[COL_INVENTORY_REQUEST] as string) || "",
+    });
 
     return NextResponse.json({ success: true, finishTime });
   } catch (err) {
