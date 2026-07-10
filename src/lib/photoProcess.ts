@@ -148,6 +148,26 @@ export async function processPhoto(file: File): Promise<Blob> {
   return blob;
 }
 
+// Adaptive upload parallelism. A field phone on weak cellular chokes if we open
+// too many sockets, but a healthy 4g/wifi link is under-fed at the old fixed 2.
+// Read the Network Information API where present; default to a modest 3 (a safe
+// bump over 2) when it's absent — Safari/iOS, the common field browser, doesn't
+// expose it. effectiveType is a cellular-equivalent rating, so wifi/ethernet are
+// only distinguishable via `type`.
+export function getUploadConcurrency(): number {
+  if (typeof navigator === "undefined") return 3;
+  const conn = (
+    navigator as Navigator & {
+      connection?: { effectiveType?: string; type?: string };
+    }
+  ).connection;
+  const effective = conn?.effectiveType;
+  const type = conn?.type;
+  if (effective === "slow-2g" || effective === "2g" || effective === "3g") return 2;
+  if (effective === "4g" || type === "wifi" || type === "ethernet") return 4;
+  return 3;
+}
+
 export function newId(): string {
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();

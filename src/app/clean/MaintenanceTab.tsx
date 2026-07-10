@@ -1,7 +1,14 @@
 "use client";
 
-import { useState, useRef, useEffect, forwardRef, useImperativeHandle } from "react";
-import { processPhoto, newId, runWithConcurrency } from "@/lib/photoProcess";
+import {
+  useState,
+  useRef,
+  useEffect,
+  useCallback,
+  forwardRef,
+  useImperativeHandle,
+} from "react";
+import { processPhoto, newId, getUploadConcurrency } from "@/lib/photoProcess";
 import { reportClientEvent } from "@/lib/clientEvent";
 import { uploadWithRetry, UploadHttpError } from "@/lib/uploadFetch";
 
@@ -26,9 +33,6 @@ interface PhotoItem {
   status: PhotoStatus;
   error?: string;
 }
-
-// See PhotosTab: 2 keeps field-cellular uploads from contending for the pipe.
-const UPLOAD_CONCURRENCY = 2;
 
 async function uploadOne(cleanId: string, photo: PhotoItem): Promise<void> {
   reportClientEvent({
@@ -74,39 +78,120 @@ async function uploadOne(cleanId: string, photo: PhotoItem): Promise<void> {
   });
 }
 
-async function finalizeCount(cleanId: string): Promise<void> {
-  const res = await fetch("/api/maintenance/upload-photo/finalize", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ cleanId }),
-  });
-  if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    try {
-      const data = await res.json();
-      if (data?.error) msg = data.error;
-    } catch {}
-    throw new Error(msg);
-  }
-}
-
 const MaintenanceTab = forwardRef<MaintenanceTabHandle, Props>(function MaintenanceTab(
   { cleanId, property, active, onBusyChange, onDirtyChange },
   ref
 ) {
   const [photos, setPhotos] = useState<PhotoItem[]>([]);
   const [uploading, setUploading] = useState(false);
-  const [finalizeError, setFinalizeError] = useState<string | null>(null);
   const [text, setText] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [textSuccess, setTextSuccess] = useState(false);
   const [textError, setTextError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Mirror photos into a ref so the background pump can see items added mid-flight
+  // (auto-upload joins the running queue instead of spawning a second pool).
+  const photosRef = useRef<PhotoItem[]>([]);
+  useEffect(() => {
+    photosRef.current = photos;
+  }, [photos]);
+
+  const pumpingRef = useRef(false);
+  const pumpPromiseRef = useRef<Promise<void> | null>(null);
+  const pumpRef = useRef<() => Promise<void>>(() => Promise.resolve());
+
   const failedCount = photos.filter((p) => p.status === "failed").length;
   const pendingCount = photos.filter((p) => p.status === "pending").length;
+  const uploadingCount = photos.filter((p) => p.status === "uploading").length;
   const successCount = photos.filter((p) => p.status === "success").length;
   const allPhotosDone = photos.length > 0 && photos.every((p) => p.status === "success");
+
+  const updatePhoto = useCallback((id: string, patch: Partial<PhotoItem>) => {
+    setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  }, []);
+
+  // Background uploader. See PhotosTab — idempotent, re-fans for mid-flight
+  // additions, shows ✓ as each upload returns; the sheet count is reconciled from
+  // Drive at finish (WS3) rather than a per-batch recount.
+  const pumpUploads = useCallback((): Promise<void> => {
+    if (pumpingRef.current) return pumpPromiseRef.current ?? Promise.resolve();
+    if (!photosRef.current.some((p) => p.status === "pending")) return Promise.resolve();
+
+    pumpingRef.current = true;
+    setUploading(true);
+
+    const inFlight = new Set<string>();
+    const nextPending = () =>
+      photosRef.current.find((p) => p.status === "pending" && !inFlight.has(p.id));
+
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        const photo = nextPending();
+        if (!photo) return;
+        inFlight.add(photo.id);
+        updatePhoto(photo.id, { status: "uploading", error: undefined });
+        try {
+          await uploadOne(cleanId, photo);
+          updatePhoto(photo.id, { status: "success" });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : "Upload failed";
+          updatePhoto(photo.id, { status: "failed", error: message });
+        } finally {
+          inFlight.delete(photo.id);
+        }
+      }
+    };
+
+    const run = (async () => {
+      try {
+        for (;;) {
+          const lanes = getUploadConcurrency();
+          await Promise.all(Array.from({ length: lanes }, () => worker()));
+          if (!photosRef.current.some((p) => p.status === "pending")) break;
+        }
+      } finally {
+        pumpingRef.current = false;
+        setUploading(false);
+      }
+    })();
+    pumpPromiseRef.current = run;
+
+    run.finally(() => {
+      if (photosRef.current.some((p) => p.status === "pending")) void pumpRef.current();
+    });
+
+    return run;
+  }, [cleanId, updatePhoto]);
+
+  useEffect(() => {
+    pumpRef.current = pumpUploads;
+  }, [pumpUploads]);
+
+  // Auto-start uploads the instant photos are added — no button tap.
+  useEffect(() => {
+    if (photos.some((p) => p.status === "pending")) void pumpUploads();
+  }, [photos, pumpUploads]);
+
+  const drainUploads = useCallback(async (): Promise<void> => {
+    for (;;) {
+      await pumpUploads();
+      if (
+        !photosRef.current.some(
+          (p) => p.status === "pending" || p.status === "uploading"
+        )
+      ) {
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 30));
+    }
+  }, [pumpUploads]);
+
+  const retryFailed = useCallback(() => {
+    photosRef.current
+      .filter((p) => p.status === "failed")
+      .forEach((p) => updatePhoto(p.id, { status: "pending", error: undefined }));
+  }, [updatePhoto]);
 
   useEffect(() => {
     onBusyChange?.(uploading || submitting);
@@ -118,10 +203,9 @@ const MaintenanceTab = forwardRef<MaintenanceTabHandle, Props>(function Maintena
       text.trim().length > 0 ||
       pendingCount > 0 ||
       failedCount > 0 ||
-      textError !== null ||
-      finalizeError !== null;
+      textError !== null;
     onDirtyChange?.(dirty);
-  }, [text, pendingCount, failedCount, textError, finalizeError, onDirtyChange]);
+  }, [text, pendingCount, failedCount, textError, onDirtyChange]);
 
   // Hide visible-when-active feedback when the cleaner navigates away.
   useEffect(() => {
@@ -146,58 +230,16 @@ const MaintenanceTab = forwardRef<MaintenanceTabHandle, Props>(function Maintena
         status: "pending",
       }));
 
+    // New pending items start uploading automatically via the effect above.
     if (additions.length > 0) {
       setPhotos((prev) => [...prev, ...additions]);
-      setFinalizeError(null);
     }
     if (inputRef.current) inputRef.current.value = "";
-  }
-
-  function updatePhoto(id: string, patch: Partial<PhotoItem>) {
-    setPhotos((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
-  }
-
-  async function uploadStatuses(statuses: PhotoStatus[]): Promise<boolean> {
-    const queue = photos.filter((p) => statuses.includes(p.status));
-    if (queue.length === 0) return true;
-
-    setUploading(true);
-    setFinalizeError(null);
-    queue.forEach((p) => updatePhoto(p.id, { status: "uploading", error: undefined }));
-
-    let allOk = true;
-    await runWithConcurrency(queue, UPLOAD_CONCURRENCY, async (photo) => {
-      try {
-        await uploadOne(cleanId, photo);
-        updatePhoto(photo.id, { status: "success" });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Upload failed";
-        updatePhoto(photo.id, { status: "failed", error: message });
-        allOk = false;
-      }
-    });
-
-    try {
-      await finalizeCount(cleanId);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Sheet update failed";
-      console.error("[MaintenanceTab] finalize failed:", err);
-      setFinalizeError(message);
-      allOk = false;
-    }
-
-    setUploading(false);
-    return allOk;
-  }
-
-  async function upload(mode: "pending" | "failed") {
-    await uploadStatuses([mode]);
   }
 
   function clearAll() {
     photos.forEach((p) => URL.revokeObjectURL(p.previewUrl));
     setPhotos([]);
-    setFinalizeError(null);
     if (inputRef.current) inputRef.current.value = "";
   }
 
@@ -233,31 +275,19 @@ const MaintenanceTab = forwardRef<MaintenanceTabHandle, Props>(function Maintena
     }
   }
 
-  async function retryFinalize(): Promise<boolean> {
-    setFinalizeError(null);
-    try {
-      await finalizeCount(cleanId);
-      return true;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Sheet update failed";
-      setFinalizeError(message);
-      return false;
-    }
-  }
-
   useImperativeHandle(ref, () => ({
     async submitAll() {
       const tasks: Promise<boolean>[] = [];
       if (text.trim().length > 0) tasks.push(submitText());
-      const photoStatuses: PhotoStatus[] = [];
-      if (pendingCount > 0) photoStatuses.push("pending");
-      if (failedCount > 0) photoStatuses.push("failed");
-      if (photoStatuses.length > 0) {
-        tasks.push(uploadStatuses(photoStatuses));
-      } else if (finalizeError) {
-        tasks.push(retryFinalize());
-      }
-      if (tasks.length === 0) return true;
+      // Re-queue any failed photos, then wait for the photo queue to drain.
+      photosRef.current
+        .filter((p) => p.status === "failed")
+        .forEach((p) => updatePhoto(p.id, { status: "pending", error: undefined }));
+      tasks.push(
+        drainUploads().then(() =>
+          photosRef.current.every((p) => p.status === "success")
+        )
+      );
       const results = await Promise.all(tasks);
       return results.every(Boolean);
     },
@@ -342,21 +372,13 @@ const MaintenanceTab = forwardRef<MaintenanceTabHandle, Props>(function Maintena
           </div>
         )}
 
-        {finalizeError && !uploading && (
-          <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-4 mb-4">
-            <p className="text-yellow-900 font-medium">
-              Photos are in Drive but the sheet count didn&apos;t update: {finalizeError}
-            </p>
-          </div>
-        )}
-
         <label className="block w-full cursor-pointer">
           <div className="bg-white border-2 border-dashed border-gray-300 rounded-xl p-6 text-center hover:border-blue-400 transition-colors">
             <div className="text-3xl mb-2">🛠</div>
             <p className="text-gray-600 font-medium">
               {photos.length > 0 ? "Tap to add more photos" : "Tap to add maintenance photos"}
             </p>
-            <p className="text-gray-400 text-sm mt-1">Select multiple from camera roll</p>
+            <p className="text-gray-400 text-sm mt-1">Uploads start automatically</p>
           </div>
           <input
             ref={inputRef}
@@ -373,8 +395,9 @@ const MaintenanceTab = forwardRef<MaintenanceTabHandle, Props>(function Maintena
             <p className="text-sm text-gray-500 mt-4 mb-2">
               {photos.length} selected
               {successCount > 0 && ` · ${successCount} uploaded`}
-              {failedCount > 0 && ` · ${failedCount} failed`}
+              {uploadingCount > 0 && ` · ${uploadingCount} uploading`}
               {pendingCount > 0 && ` · ${pendingCount} pending`}
+              {failedCount > 0 && ` · ${failedCount} failed`}
             </p>
             <div className="grid grid-cols-3 gap-2 mb-4">
               {photos.map((p) => {
@@ -397,24 +420,12 @@ const MaintenanceTab = forwardRef<MaintenanceTabHandle, Props>(function Maintena
             </div>
 
             <div className="flex gap-3">
-              {!allPhotosDone && pendingCount > 0 && (
+              {!allPhotosDone && failedCount > 0 && !uploading && (
                 <button
-                  onClick={() => upload("pending")}
-                  disabled={uploading}
-                  className="flex-1 bg-blue-600 text-white py-3 rounded-xl text-base font-medium hover:bg-blue-700 active:bg-blue-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={retryFailed}
+                  className="flex-1 bg-blue-600 text-white py-3 rounded-xl text-base font-medium hover:bg-blue-700 active:bg-blue-800 transition-colors"
                 >
-                  {uploading
-                    ? "Uploading..."
-                    : `Upload ${pendingCount} Photo${pendingCount !== 1 ? "s" : ""}`}
-                </button>
-              )}
-              {!allPhotosDone && pendingCount === 0 && failedCount > 0 && (
-                <button
-                  onClick={() => upload("failed")}
-                  disabled={uploading}
-                  className="flex-1 bg-blue-600 text-white py-3 rounded-xl text-base font-medium hover:bg-blue-700 active:bg-blue-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  {uploading ? "Uploading..." : `Retry ${failedCount} Failed`}
+                  Retry {failedCount} Failed
                 </button>
               )}
               {allPhotosDone && (
