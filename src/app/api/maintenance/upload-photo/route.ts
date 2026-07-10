@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { Readable } from "stream";
 import { isAuthenticated } from "@/lib/auth";
-import { getDrive, MAINTENANCE_DRIVE_ROOT_FOLDER_ID } from "@/lib/google";
+import {
+  getDrive,
+  MAINTENANCE_DRIVE_ROOT_FOLDER_ID,
+  isMaintenanceFolderMissingError,
+  appendUploadLog,
+} from "@/lib/google";
 import { withRetry } from "@/lib/retry";
 import { isAbortLike } from "@/lib/uploadAbort";
 
@@ -157,6 +162,35 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ success: true, fileId: created.data.id, alreadyExisted: false });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
+
+    // Distinct path for "the configured maintenance folder is gone" (the ≥4-day
+    // outage). Don't bury it as a generic 502 that the client retries 4× — it's a
+    // config outage no retry can fix. Return a labeled, non-retryable 424 and drop
+    // a greppable `server-maint-config-error` row in the Upload Log so it surfaces
+    // in the tab, not just per-cleaner. /api/health also trips on this.
+    if (isMaintenanceFolderMissingError(err)) {
+      console.error(
+        `[maint-upload] maintenance folder unreachable (config error) uploadId=${uploadId}:`,
+        message
+      );
+      await appendUploadLog({
+        timestamp: new Date().toISOString(),
+        event: "server-maint-config-error",
+        cleanId,
+        uploadId,
+        status: 424,
+        error: `Maintenance Drive folder unreachable (${MAINTENANCE_DRIVE_ROOT_FOLDER_ID || "unset"}): ${message}`,
+      });
+      return NextResponse.json(
+        {
+          error:
+            "Maintenance photo storage is misconfigured — please tell an admin. (Retrying won't help.)",
+          code: "maint-config-error",
+        },
+        { status: 424 }
+      );
+    }
+
     console.error(`[maint-upload] failed uploadId=${uploadId}:`, err);
     return NextResponse.json({ error: message }, { status: 502 });
   }

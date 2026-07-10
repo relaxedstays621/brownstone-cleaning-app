@@ -31,6 +31,51 @@ export function getSheets() {
   return google.sheets({ version: "v4", auth: getAuth() });
 }
 
+// Cheap reachability check for the maintenance Drive folder (used by /api/health).
+// The maintenance-upload outage (≥4 days, unnoticed) happened because the configured
+// folder was deleted, so every per-upload folder resolution failed with a bare 502.
+// This confirms MAINTENANCE_DRIVE_ROOT_FOLDER_ID is set, resolves, and isn't trashed
+// with one cheap files.get. Returns a structured result; NEVER throws.
+//
+// No supportsAllDrives on purpose: the app's other Drive calls don't pass it, so this
+// must mirror them — the folder has to live in My Drive to be reachable at all.
+export async function verifyMaintenanceFolder(): Promise<{
+  ok: boolean;
+  reason?: string;
+}> {
+  if (!MAINTENANCE_DRIVE_ROOT_FOLDER_ID) {
+    return { ok: false, reason: "maintenance-folder-unset" };
+  }
+  try {
+    const drive = getDrive();
+    const res = await drive.files.get({
+      fileId: MAINTENANCE_DRIVE_ROOT_FOLDER_ID,
+      fields: "id,trashed",
+    });
+    if (res.data.trashed) {
+      return { ok: false, reason: "maintenance-folder-trashed" };
+    }
+    return { ok: true };
+  } catch {
+    // 404 (deleted/inaccessible) or any transport error → not reachable.
+    return { ok: false, reason: "maintenance-folder-not-found" };
+  }
+}
+
+// True when a Drive error is the "configured parent folder doesn't exist" case —
+// a 404 / "File not found" naming MAINTENANCE_DRIVE_ROOT_FOLDER_ID. This is a
+// config outage (the whole folder is gone), not a transient per-upload failure,
+// so the upload route surfaces it as a distinct labeled error instead of a 502.
+export function isMaintenanceFolderMissingError(err: unknown): boolean {
+  if (!MAINTENANCE_DRIVE_ROOT_FOLDER_ID) return true;
+  const status = (err as { code?: number; status?: number } | null)?.code ??
+    (err as { status?: number } | null)?.status;
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  const mentionsFolder = message.includes(MAINTENANCE_DRIVE_ROOT_FOLDER_ID);
+  const notFound = status === 404 || /file not found/i.test(message);
+  return notFound && mentionsFolder;
+}
+
 export const SHEET_ID = process.env.GOOGLE_SHEET_ID!;
 export const DRIVE_ROOT_FOLDER_ID = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID!;
 // Required env, same as SHEET_ID / DRIVE_ROOT_FOLDER_ID above. No literal
