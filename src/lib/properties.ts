@@ -25,6 +25,11 @@ export const PROPERTIES = [
   "100 Black Nugget Ln",
   "1170 Airport Road",
   "127 Big Hill",
+  // Heather's maintenance property (team defaultProperty). Hospitable name is
+  // "b - Whidbey Island Retreat" (Oak Harbor) — this is its normalizeLabel()
+  // canonical form. No Drive folder existed before team logins; the first
+  // start-clean creates it under this exact name, which becomes the SoR.
+  "Whidbey Island Retreat",
 ] as const;
 
 export type Property = (typeof PROPERTIES)[number];

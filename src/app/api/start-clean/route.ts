@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
-import { isAuthenticated } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import {
   getDrive,
   getSheets,
@@ -47,7 +47,8 @@ async function findOrCreateFolder(
 }
 
 export async function POST(req: NextRequest) {
-  if (!(await isAuthenticated())) {
+  const session = await getSession();
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -106,9 +107,13 @@ export async function POST(req: NextRequest) {
         sheets.spreadsheets.values.append(
           {
             spreadsheetId: SHEET_ID,
-            range: "Clean Log!A:H",
+            range: "Clean Log!A:I",
             valueInputOption: "USER_ENTERED",
-            requestBody: { values: [[date, property, startTime, "", "", "", "", cleanId]] },
+            // Col I = Cleaned By: the session's canonical team name (legacy
+            // shared-password sessions carry "" — blank, same as pre-teams rows).
+            requestBody: {
+              values: [[date, property, startTime, "", "", "", "", cleanId, session.team]],
+            },
           },
           { timeout: SHEETS_TIMEOUT_MS }
         ),

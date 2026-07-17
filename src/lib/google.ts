@@ -86,6 +86,10 @@ export const DRIVE_ROOT_FOLDER_ID = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID!;
 export const MAINTENANCE_DRIVE_ROOT_FOLDER_ID =
   process.env.GOOGLE_DRIVE_MAINTENANCE_FOLDER_ID!;
 
+// "Cleaned By" is appended at the END (col I) on purpose: the finish-clean
+// matcher and photo-count writes address columns by position (Clean ID at H,
+// counts at E/F), so inserting mid-sheet would corrupt them — same reason the
+// legacy migration moved Clean ID to H rather than inserting.
 const CLEAN_LOG_HEADERS = [
   "Date",
   "Property",
@@ -95,7 +99,11 @@ const CLEAN_LOG_HEADERS = [
   "# Maintenance Photos",
   "Inventory Request",
   "Clean ID",
+  "Cleaned By",
 ];
+// The pre-team-logins 8-col shape (ends at "Clean ID"). Migration from it is a
+// single header write — old rows legitimately have a blank Cleaned By.
+const PREV_CLEAN_LOG_HEADERS = CLEAN_LOG_HEADERS.slice(0, 8);
 const LEGACY_CLEAN_LOG_HEADERS = [
   "Date",
   "Property",
@@ -105,6 +113,8 @@ const LEGACY_CLEAN_LOG_HEADERS = [
   "Clean ID",
 ];
 const INVENTORY_HEADERS = ["Date", "Property", "Item", "Quantity", "Notes", "Status"];
+// "Submitted By" appended at the end for the same positional-safety reason —
+// the Status dropdown validation lives at column F and must not move.
 const MAINTENANCE_HEADERS = [
   "Date",
   "Property",
@@ -112,14 +122,17 @@ const MAINTENANCE_HEADERS = [
   "Clean ID",
   "Text",
   "Status",
+  "Submitted By",
 ];
 
-export const CLEAN_LOG_RANGE = "Clean Log!A:H";
-export const CLEAN_LOG_CLEAN_ID_COL = 7; // 0-indexed in A:H
+export const CLEAN_LOG_RANGE = "Clean Log!A:I";
+export const CLEAN_LOG_CLEAN_ID_COL = 7; // 0-indexed in A:I
+export const CLEAN_LOG_CLEANED_BY_COL = 8; // 0-indexed in A:I
 export const CLEAN_LOG_PHOTOS_COL_LETTER = "E";
 export const CLEAN_LOG_MAINTENANCE_PHOTOS_COL_LETTER = "F";
 export const CLEAN_LOG_INVENTORY_REQUEST_COL_LETTER = "G";
 export const CLEAN_LOG_CLEAN_ID_COL_LETTER = "H";
+export const CLEAN_LOG_CLEANED_BY_COL_LETTER = "I";
 
 async function migrateLegacyCleanLog(
   sheets: ReturnType<typeof getSheets>,
@@ -134,7 +147,8 @@ async function migrateLegacyCleanLog(
   });
   const rows = legacy.data.values || [];
 
-  // Build the new A:H rectangle: keep cols A-E, blank F (Maintenance Photos) + G (Inventory Request), move legacy F (Clean ID) to H.
+  // Build the new A:I rectangle: keep cols A-E, blank F (Maintenance Photos) + G
+  // (Inventory Request), move legacy F (Clean ID) to H, blank I (Cleaned By).
   const migrated = rows.map((row) => {
     const date = row[0] ?? "";
     const property = row[1] ?? "";
@@ -142,14 +156,14 @@ async function migrateLegacyCleanLog(
     const finishTime = row[3] ?? "";
     const photos = row[4] ?? "";
     const cleanId = row[5] ?? "";
-    return [date, property, startTime, finishTime, photos, "", "", cleanId];
+    return [date, property, startTime, finishTime, photos, "", "", cleanId, ""];
   });
 
   const writes: Array<{ range: string; values: string[][] }> = [
-    { range: "Clean Log!A1:H1", values: [CLEAN_LOG_HEADERS] },
+    { range: "Clean Log!A1:I1", values: [CLEAN_LOG_HEADERS] },
   ];
   if (migrated.length > 0) {
-    writes.push({ range: `Clean Log!A2:H${migrated.length + 1}`, values: migrated });
+    writes.push({ range: `Clean Log!A2:I${migrated.length + 1}`, values: migrated });
   }
   // Wipe the now-stale column F values (legacy Clean ID) below the migrated rectangle, in case
   // the legacy sheet had trailing rows we didn't read. Safe because we just wrote H with the IDs.
@@ -169,12 +183,26 @@ async function migrateLegacyCleanLog(
 async function ensureCleanLogHeaders(sheets: ReturnType<typeof getSheets>) {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: "Clean Log!A1:H1",
+    range: "Clean Log!A1:I1",
   });
   const actualHeader = (res.data.values?.[0] ?? []) as string[];
 
   const matchesNew = CLEAN_LOG_HEADERS.every((h, i) => actualHeader[i] === h);
   if (matchesNew) return;
+
+  // Pre-team-logins 8-col shape: migration is a single header write — no row
+  // rewrites, existing rows legitimately have a blank Cleaned By.
+  const matchesPrev = PREV_CLEAN_LOG_HEADERS.every((h, i) => actualHeader[i] === h);
+  if (matchesPrev) {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: "Clean Log!I1",
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [["Cleaned By"]] },
+    });
+    console.log('[google.ts] Clean Log: added "Cleaned By" header at I1');
+    return;
+  }
 
   const matchesLegacy = LEGACY_CLEAN_LOG_HEADERS.every((h, i) => actualHeader[i] === h);
   if (matchesLegacy) {
@@ -185,7 +213,7 @@ async function ensureCleanLogHeaders(sheets: ReturnType<typeof getSheets>) {
   // Fresh sheet or unknown shape — write the headers and let downstream code populate.
   await sheets.spreadsheets.values.update({
     spreadsheetId: SHEET_ID,
-    range: "Clean Log!A1:H1",
+    range: "Clean Log!A1:I1",
     valueInputOption: "USER_ENTERED",
     requestBody: { values: [CLEAN_LOG_HEADERS] },
   });
@@ -262,17 +290,19 @@ async function ensureMaintenanceRequestsTab(sheets: ReturnType<typeof getSheets>
     sheetId = created.data.replies?.[0]?.addSheet?.properties?.sheetId ?? undefined;
   }
 
-  // Always make sure the header row matches — cheap and idempotent.
+  // Always make sure the header row matches — cheap and idempotent. (This is
+  // also the "Submitted By" col-G migration: the pre-team-logins A:F header
+  // mismatches and gets rewritten in place; old rows stay valid with blank G.)
   const header = await sheets.spreadsheets.values.get({
     spreadsheetId: SHEET_ID,
-    range: "Maintenance Requests!A1:F1",
+    range: "Maintenance Requests!A1:G1",
   });
   const actual = (header.data.values?.[0] ?? []) as string[];
   const headerMismatch = MAINTENANCE_HEADERS.some((h, i) => actual[i] !== h);
   if (headerMismatch) {
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_ID,
-      range: "Maintenance Requests!A1:F1",
+      range: "Maintenance Requests!A1:G1",
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [MAINTENANCE_HEADERS] },
     });

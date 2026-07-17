@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isAuthenticated } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import {
   getDrive,
   getSheets,
   SHEET_ID,
   CLEAN_LOG_RANGE,
   CLEAN_LOG_CLEAN_ID_COL,
+  CLEAN_LOG_CLEANED_BY_COL,
   CLEAN_LOG_PHOTOS_COL_LETTER,
   CLEAN_LOG_MAINTENANCE_PHOTOS_COL_LETTER,
   MAINTENANCE_DRIVE_ROOT_FOLDER_ID,
@@ -103,6 +104,7 @@ interface FinishPayload {
   photoCount: number | null;
   maintenancePhotoCount: number | null;
   inventoryRequest: string;
+  cleanedBy: string;
 }
 
 // Best-effort finish notification. Fires the complete, finish-time payload to the
@@ -137,7 +139,8 @@ async function postFinishWebhook(payload: FinishPayload): Promise<void> {
 }
 
 export async function POST(req: NextRequest) {
-  if (!(await isAuthenticated())) {
+  const session = await getSession();
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -273,6 +276,10 @@ export async function POST(req: NextRequest) {
         photoCount,
         maintenancePhotoCount,
         inventoryRequest: (matchedRow[COL_INVENTORY_REQUEST] as string) || "",
+        // Prefer the name recorded at start (col I) — it names who actually
+        // started the clean even if a different session finishes it; fall back
+        // to the finishing session's team for pre-teams rows.
+        cleanedBy: (matchedRow[CLEAN_LOG_CLEANED_BY_COL] as string) || session.team,
       });
     } else {
       console.log(

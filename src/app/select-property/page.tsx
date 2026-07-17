@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { PROPERTIES } from "@/lib/properties";
 
@@ -13,6 +13,9 @@ export default function SelectPropertyPage() {
   const [property, setProperty] = useState("");
   const [loading, setLoading] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
+  const [team, setTeam] = useState("");
+  const [defaultProperty, setDefaultProperty] = useState("");
+  const pinned = useRef(false);
   // Seed with the static list so the picker renders instantly and still works if
   // /api/properties is slow or Hospitable is down; replace with the live set once
   // it loads. The value is always the label (the Drive folder + sheet SoR).
@@ -26,9 +29,24 @@ export default function SelectPropertyPage() {
       .then((r) => r.json())
       .then((data) => {
         if (!data.authenticated) router.replace("/");
-        else setAuthChecked(true);
+        else {
+          setTeam(data.team || "");
+          setDefaultProperty(data.defaultProperty || "");
+          setAuthChecked(true);
+        }
       });
   }, [router]);
+
+  // Pre-select the team's default property (e.g. Heather → Whidbey Island
+  // Retreat) once, exact-match only — a config/picker name mismatch silently
+  // skips the pin, and the full list stays selectable either way.
+  useEffect(() => {
+    if (pinned.current || !defaultProperty) return;
+    if (options.some((o) => o.label === defaultProperty)) {
+      pinned.current = true;
+      setProperty((prev) => prev || defaultProperty);
+    }
+  }, [defaultProperty, options]);
 
   useEffect(() => {
     let cancelled = false;
@@ -82,6 +100,13 @@ export default function SelectPropertyPage() {
     <div className="min-h-screen flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
         <div className="bg-white rounded-2xl shadow-lg p-8">
+          {team && (
+            <div className="flex justify-center mb-3">
+              <span className="inline-block bg-blue-50 text-blue-700 text-xs font-medium px-3 py-1 rounded-full">
+                {team}
+              </span>
+            </div>
+          )}
           <h1 className="text-xl font-bold text-center mb-6">Select Property</h1>
           <select
             value={property}

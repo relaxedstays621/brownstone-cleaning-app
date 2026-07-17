@@ -29,6 +29,7 @@ function useUnsupportedBrowser() {
 function CleanPageInner() {
   const [activeTab, setActiveTab] = useState<TabKey>("photos");
   const [authChecked, setAuthChecked] = useState(false);
+  const [team, setTeam] = useState("");
   const [showFinishModal, setShowFinishModal] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const [submittingAll, setSubmittingAll] = useState(false);
@@ -54,7 +55,10 @@ function CleanPageInner() {
       .then((data) => {
         if (!data.authenticated) router.replace("/");
         else if (!property || !cleanId) router.replace("/select-property");
-        else setAuthChecked(true);
+        else {
+          setTeam(data.team || "");
+          setAuthChecked(true);
+        }
       });
   }, [router, property, cleanId]);
 
@@ -167,7 +171,9 @@ function CleanPageInner() {
       <div className="bg-white border-b border-gray-200 px-4 py-3">
         <div className="max-w-lg mx-auto flex items-center justify-between">
           <div>
-            <p className="text-sm text-gray-500">Cleaning</p>
+            <p className="text-sm text-gray-500">
+              Cleaning{team ? ` — ${team}` : ""}
+            </p>
             <h1 className="text-lg font-bold leading-tight">{property}</h1>
           </div>
           <button

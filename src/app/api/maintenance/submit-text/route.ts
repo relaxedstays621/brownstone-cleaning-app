@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isAuthenticated } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import { getDrive, getSheets, SHEET_ID } from "@/lib/google";
 import { withRetry } from "@/lib/retry";
 
@@ -45,7 +45,8 @@ async function loadSessionMeta(
 }
 
 export async function POST(req: NextRequest) {
-  if (!(await isAuthenticated())) {
+  const session = await getSession();
+  if (!session) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
@@ -92,10 +93,13 @@ export async function POST(req: NextRequest) {
         sheets.spreadsheets.values.append(
           {
             spreadsheetId: SHEET_ID,
-            range: "Maintenance Requests!A:F",
+            range: "Maintenance Requests!A:G",
             valueInputOption: "USER_ENTERED",
+            // Col G = Submitted By: the session team ("" for legacy logins).
             requestBody: {
-              values: [[meta.date, meta.property, meta.startTime, cleanId, text, "Pending"]],
+              values: [
+                [meta.date, meta.property, meta.startTime, cleanId, text, "Pending", session.team],
+              ],
             },
           },
           { timeout: SHEETS_TIMEOUT_MS }
