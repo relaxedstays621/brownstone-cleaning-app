@@ -30,6 +30,11 @@ export const PROPERTIES = [
   // canonical form. No Drive folder existed before team logins; the first
   // start-clean creates it under this exact name, which becomes the SoR.
   "Whidbey Island Retreat",
+  // Second Whidbey-area team property (team `properties` include). Hospitable
+  // name is "b - Beachview Retreat" (Clinton) — this is its normalizeLabel()
+  // canonical form. Like Whidbey Island Retreat above, no Drive folder exists
+  // until the first start-clean creates it under this exact name (the SoR).
+  "Beachview Retreat",
 ] as const;
 
 export type Property = (typeof PROPERTIES)[number];

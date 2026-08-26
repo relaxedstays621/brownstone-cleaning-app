@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAuthenticated } from "@/lib/auth";
 import { PROPERTIES } from "@/lib/properties";
-import { teamDefaultProperties } from "@/lib/teams";
+import { teamPropertyLabels } from "@/lib/teams";
 
 // Live property picker source. Replaces the hardcoded list so new Suncadia units
 // appear without a deploy. Backed by a ~weekly in-process cache over the
@@ -50,10 +50,11 @@ async function fetchFromHospitable(): Promise<PropertyOption[]> {
   if (!token) throw new Error("HOSPITABLE_API_TOKEN not set");
 
   const out: PropertyOption[] = [];
-  // Team defaultProperty labels (e.g. Heather's "Whidbey Island Retreat", Oak
-  // Harbor) are outside the cleaning-cities set but must appear in the picker —
-  // exact match on the canonical label so the rest of that portfolio stays out.
-  const extraLabels = new Set(teamDefaultProperties());
+  // Team property labels (e.g. the Whidbey pair "Whidbey Island Retreat" /
+  // "Beachview Retreat") are outside the cleaning-cities set but must appear in
+  // the picker — exact match on the canonical label so the rest of that
+  // portfolio stays out.
+  const extraLabels = new Set(teamPropertyLabels());
   let page = 1;
   for (;;) {
     const controller = new AbortController();

@@ -4,7 +4,8 @@
 // lands in the sheet's "Cleaned By" / "Submitted By" columns.
 //
 // CLEANING_TEAMS='[{"name":"Nova","password":"..."},
-//                  {"name":"Heather","password":"...","defaultProperty":"Whidbey Island Retreat"}]'
+//                  {"name":"Heather","password":"...","defaultProperty":"Whidbey Island Retreat"},
+//                  {"name":"...","password":"...","properties":["Beachview Retreat","Whidbey Island Retreat"]}]'
 //
 // The legacy shared CLEANING_APP_PASSWORD keeps working during rollout, mapping
 // to name "" (blank Cleaned By — same behavior as before teams existed). Remove
@@ -17,6 +18,11 @@ export interface CleaningTeam {
   // NOT Hospitable's "b - " prefixed name). Pre-selected in the property picker
   // and force-included in /api/properties even outside the cleaning-cities filter.
   defaultProperty?: string;
+  // Additional canonical picker labels force-included in /api/properties (same
+  // rules as defaultProperty) but NOT pre-selected — for teams that work a fixed
+  // set of properties outside the cleaning-cities filter (e.g. the Whidbey pair
+  // "Beachview Retreat" + "Whidbey Island Retreat").
+  properties?: string[];
 }
 
 let cached: CleaningTeam[] | null = null;
@@ -47,12 +53,23 @@ export function getTeams(): CleaningTeam[] {
     if (typeof entry.password !== "string" || !entry.password) {
       throw new Error(`CLEANING_TEAMS[${i}] (${entry.name}): missing password`);
     }
+    if (
+      entry.properties !== undefined &&
+      (!Array.isArray(entry.properties) ||
+        entry.properties.some((p) => typeof p !== "string" || !p.trim()))
+    ) {
+      throw new Error(
+        `CLEANING_TEAMS[${i}] (${entry.name}): properties must be an array of non-empty strings`
+      );
+    }
+    const properties = Array.from(new Set((entry.properties ?? []).map((p) => p.trim())));
     return {
       name: entry.name.trim(),
       password: entry.password,
       ...(typeof entry.defaultProperty === "string" && entry.defaultProperty.trim()
         ? { defaultProperty: entry.defaultProperty.trim() }
         : {}),
+      ...(properties.length ? { properties } : {}),
     };
   });
   const passwords = new Set(teams.map((t) => t.password));
@@ -85,13 +102,15 @@ export function findTeamByName(name: string): CleaningTeam | null {
   return getTeams().find((t) => t.name === name) ?? null;
 }
 
-// defaultProperty labels for /api/properties' include-filter. Swallows config
-// errors on purpose — the picker must never break on a bad env edit.
-export function teamDefaultProperties(): string[] {
+// All team property labels (defaultProperty + properties) for /api/properties'
+// include-filter. Swallows config errors on purpose — the picker must never
+// break on a bad env edit.
+export function teamPropertyLabels(): string[] {
   try {
-    return getTeams()
-      .map((t) => t.defaultProperty)
-      .filter((p): p is string => !!p);
+    return getTeams().flatMap((t) => [
+      ...(t.defaultProperty ? [t.defaultProperty] : []),
+      ...(t.properties ?? []),
+    ]);
   } catch {
     return [];
   }

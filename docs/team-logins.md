@@ -117,3 +117,16 @@ Order:
 1. Actual password strings (recommend not the bare names — see §1).
 2. Heather: default-select only (recommended, specced) vs hard-restrict to that property.
 3. When to drop the legacy shared password (recommend: after both teams' first real login).
+
+## Addendum 2026-08-26 — multi-property teams + setter script
+
+- `CLEANING_TEAMS` entries now also accept `"properties": ["<canonical label>", ...]` —
+  extra picker labels force-included in `/api/properties` (same rules as
+  `defaultProperty`) but not pre-selected. Built for the Whidbey-area team working both
+  "Beachview Retreat" (Hospitable "b - Beachview Retreat", Clinton) and
+  "Whidbey Island Retreat" (Hospitable "b - Whidbey Island Retreat", Oak Harbor) —
+  both outside the Cle Elum/Ronald cleaning-cities filter.
+- New logins are added with `bash scripts/add-cleaning-team.sh` (operator-run; prompts
+  for name/properties/password, edits CLEANING_TEAMS in .env with a backup). Restart
+  with `docker compose up -d --force-recreate app` to pick up the .env change — no
+  rebuild needed for config-only edits.
